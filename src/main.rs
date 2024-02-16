@@ -25,18 +25,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
             // exits the loop when reaching end of file
             Ok(Event::Eof) => break,
-
             Ok(Event::Start(e)) => {
                 if e.name().as_ref() == b"page" {
+                    buf.clear();
                     loop {
                         match reader.read_event_into(&mut buf) {
                             Ok(Event::Start(e)) => {
                                 if e.name().as_ref() == b"title" {
-                                    println!("Title: {:?}", e.name().as_ref());
+                                    let text_event = reader.read_event_into(&mut buf);
+                                    if let Ok(Event::Text(e)) = text_event {
+                                        println!("Title: {}", e.unescape().unwrap());
+                                    }
+                                    buf.clear();
                                 }
                             }
                             Ok(Event::End(e)) => {
                                 if e.name().as_ref() == b"page" {
+                                    //Reached </page> tag
                                     break;
                                 }
                             }
@@ -57,8 +62,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         buf.clear();
         itr += 1;
     }
-    for i in txt {
-        println!("{}", i);
-    }
+    // for i in txt {
+    //     println!("{}", i);
+    // }
     Ok(())
 }
