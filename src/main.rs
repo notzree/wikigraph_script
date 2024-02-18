@@ -1,69 +1,30 @@
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
+use dotenv::dotenv;
+
 use std::fs::File;
 use std::io::BufReader;
+mod models;
+mod parser;
+mod schema;
+use parser::Parser;
 
 const FILE_PATH: &str =
     "/Users/notzree/Documents/Coding_Projects/rust_projects/wikigraph/raw_data/enwiki-latest-pages-articles.xml";
+const BINARY_GRAPH_PATH: &str =
+    "/Users/notzree/Documents/Coding_Projects/rust_projects/wikigraph/raw_data/binary_graph.bin";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open(FILE_PATH)?;
-    let file = BufReader::new(file);
-    let mut reader = Reader::from_reader(file);
-    reader.trim_text(true);
-    let mut buf = Vec::new();
-    let mut txt = Vec::new();
-    let mut itr = 0;
+    dotenv().ok();
+    let db_password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+    let db_user = std::env::var("DB_USER").expect("DB_USER must be set");
+    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+    let parser = Parser::new(
+        File::open(FILE_PATH)?,
+        File::create(BINARY_GRAPH_PATH)?,
+        &format!(
+            "postgres://{}:{}@localhost:5432/{}",
+            db_user, db_password, db_name
+        ),
+    );
 
-    loop {
-        if itr > 300 {
-            break;
-        }
-        // NOTE: this is the generic case when we don't know about the input BufRead.
-        // when the input is a &str or a &[u8], we don't actually need to use another
-        // buffer, we could directly call `reader.read_event()`
-        match reader.read_event_into(&mut buf) {
-            Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
-            // exits the loop when reaching end of file
-            Ok(Event::Eof) => break,
-            Ok(Event::Start(e)) => {
-                if e.name().as_ref() == b"page" {
-                    buf.clear();
-                    loop {
-                        match reader.read_event_into(&mut buf) {
-                            Ok(Event::Start(e)) => {
-                                if e.name().as_ref() == b"title" {
-                                    let text_event = reader.read_event_into(&mut buf);
-                                    if let Ok(Event::Text(e)) = text_event {
-                                        println!("Title: {}", e.unescape().unwrap());
-                                    }
-                                    buf.clear();
-                                }
-                            }
-                            Ok(Event::End(e)) => {
-                                if e.name().as_ref() == b"page" {
-                                    //Reached </page> tag
-                                    break;
-                                }
-                            }
-
-                            Ok(Event::Eof) => break,
-                            _ => (),
-                        }
-                        buf.clear();
-                    }
-                }
-            }
-            Ok(Event::Text(e)) => txt.push(e.unescape().unwrap().into_owned()),
-
-            // There are several other `Event`s we do not consider here
-            _ => (),
-        }
-        // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
-        buf.clear();
-        itr += 1;
-    }
-    // for i in txt {
-    //     println!("{}", i);
-    // }
     Ok(())
 }

@@ -1,3 +1,5 @@
 /target
 
 raw_data/*
+.env
+output.txt
