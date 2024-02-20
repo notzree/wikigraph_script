@@ -3,10 +3,7 @@ version: "3.9"
 services:
   postgres:
     env_file:
-      - path: ./default.env
-        required: true # default
-      - path: ./override.env
-        required: false
+      - .env
     image: postgres:14-alpine
     ports:
       - 5432:5432
@@ -21,7 +18,7 @@ services:
     stdin_open: true
     tty: true
     environment:
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     build:
       context: ./
       dockerfile: ./Dockerfile

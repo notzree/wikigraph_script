@@ -3,3 +3,5 @@
 raw_data/*
 .env
 output.txt
+output1.txt
+adjacency_list.txt
