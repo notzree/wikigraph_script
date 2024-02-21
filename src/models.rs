@@ -14,6 +14,6 @@ pub struct LookupEntry {
 pub struct Lookup {
     pub id: i32,
     pub title: String,
-    pub byteoffset: i32,
-    pub length: i32,
+    pub byteoffset: usize,
+    pub length: usize,
 }

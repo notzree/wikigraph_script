@@ -5,6 +5,7 @@ use diesel::pg::PgConnection;
 use diesel::{connection, prelude::*};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::BufReader;
 //All sizes are in bytes. ie: 4 * 4 = 16 bytes = 4 integers.
@@ -33,9 +34,12 @@ impl Parser {
     //First pass to generate lookup table with computed byte offsets + create text file with adjacency list
     pub fn pre_process_file(&mut self) {
         let mut adj_list = File::create("adjacency_list.txt").unwrap();
-        let mut connection = &self.db_conn;
+        let connection = &mut self.db_conn; //todo: Fix this type error
         let mut buf: Vec<u8> = Vec::new();
         let mut itr = 0;
+        let mut prev_offset: usize = 0;
+        let mut prev_length: usize = 0;
+
         loop {
             if itr > 300 {
                 break;
@@ -93,10 +97,29 @@ impl Parser {
                             continue;
                         }
                         let links = self.extract_links_from_text(page_txt);
-                        println!("Title: {}", page_title);
-                        for l in links.iter() {
-                            println!("{}", l);
+                        let curr_length = self.compute_length(links.len());
+                        //write to adjacency list + database
+                        match self.add_to_look_up_table(
+                            &page_title,
+                            connection,
+                            prev_offset,
+                            curr_length,
+                        ) {
+                            Ok(_) => (),
+                            Err(e) => panic!("Error adding to lookup table: {:?}", e),
                         }
+
+                        println!(
+                            "Title: {}, num_links: {}, byte_offset: {}, length: {} ",
+                            page_title,
+                            links.len(),
+                            prev_offset,
+                            curr_length
+                        );
+
+                        //update prev_offset and prev_length
+                        prev_offset = self.compute_byte_offset(prev_offset, prev_length);
+                        prev_length = curr_length;
                     }
                 }
 
@@ -111,23 +134,31 @@ impl Parser {
     //Second pass to take adjacency list + lookup table -> graph in binary format.
     pub fn create_graph(&self) {}
     fn add_to_look_up_table(
+        &self,
         title: &str,
-        mut connection: PgConnection,
-        byteoffset: i32,
-        num_links: i32,
-    ) {
-        let LookupEntry = LookupEntry {
+        connection: &mut PgConnection,
+        byteoffset: usize,
+        num_links: usize,
+    ) -> Result<(), diesel::result::Error> {
+        let lookup_entry = LookupEntry {
             title: title.to_string(),
-            byteoffset,                // in bytes
-            length: 4 + 4 * num_links, //4 bytes for node header + 4 bytes (1 int) for each link
+            byteoffset: byteoffset.try_into().unwrap(), // in bytes
+            length: (4 + 4 * num_links).try_into().unwrap(), //4 bytes for node header + 4 bytes (1 int) for each link
         };
+        match insert_into(schema::lookup::table)
+            .values(&lookup_entry)
+            .execute(connection)
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
-    fn compute_byte_offset(num_links: i32) -> i32 {
-        //todo: implement
+    fn compute_byte_offset(&self, prev_offset: usize, prev_length: usize) -> usize {
+        FILE_HEADER_SIZE + prev_offset + prev_length
     }
-    fn compute_length(num_links: i32) -> i32 {
-        //todo: implement
+    fn compute_length(&self, num_links: usize) -> usize {
+        NODE_HEADER_SIZE + num_links * LINK_SIZE
     }
     fn extract_links_from_text(&self, mut page_text: Vec<String>) -> Vec<String> {
         let mut links: Vec<String> = Vec::new();
