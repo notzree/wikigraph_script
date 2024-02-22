@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new(
         File::open(FILE_PATH)?,
         File::create(BINARY_GRAPH_PATH)?,
-        &db_url,
+        db_url,
     );
     parser.pre_process_file();
 

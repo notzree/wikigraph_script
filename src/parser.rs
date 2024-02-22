@@ -6,8 +6,9 @@ use diesel::{connection, prelude::*};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::cell::RefCell;
-use std::fs::File;
-use std::io::BufReader;
+use std::fs::{self, File};
+use std::io::{BufReader, Error, Write};
+use std::thread::current;
 //All sizes are in bytes. ie: 4 * 4 = 16 bytes = 4 integers.
 const FILE_HEADER_SIZE: usize = 4 * 4;
 const NODE_HEADER_SIZE: usize = 4 * 4;
@@ -16,25 +17,25 @@ const LINK_SIZE: usize = 4;
 pub struct Parser {
     file_reader: quick_xml::Reader<std::io::BufReader<File>>,
     output_file: std::fs::File,
-    db_conn: PgConnection,
+    connection_string: String,
 }
 
 impl Parser {
-    pub fn new(file: std::fs::File, output_file: std::fs::File, db_url: &str) -> Parser {
-        let connection = PgConnection::establish(db_url)
-            .unwrap_or_else(|_| panic!("Error connecting to {}", db_url));
+    pub fn new(file: std::fs::File, output_file: std::fs::File, db_url: String) -> Parser {
         let mut file_reader = Reader::from_reader(BufReader::new(file));
         file_reader.trim_text(true);
         Parser {
             file_reader,
             output_file,
-            db_conn: connection,
+            connection_string: db_url,
         }
     }
     //First pass to generate lookup table with computed byte offsets + create text file with adjacency list
     pub fn pre_process_file(&mut self) {
         let mut adj_list = File::create("adjacency_list.txt").unwrap();
-        let connection = &mut self.db_conn; //todo: Fix this type error
+
+        let mut connection = PgConnection::establish(&self.connection_string)
+            .unwrap_or_else(|_| panic!("Error connecting to {}", self.connection_string));
         let mut buf: Vec<u8> = Vec::new();
         let mut itr = 0;
         let mut prev_offset: usize = 0;
@@ -99,23 +100,26 @@ impl Parser {
                         let links = self.extract_links_from_text(page_txt);
                         let curr_length = self.compute_length(links.len());
                         //write to adjacency list + database
-                        match self.add_to_look_up_table(
-                            &page_title,
-                            connection,
-                            prev_offset,
-                            curr_length,
-                        ) {
+                        // match self.add_to_look_up_table(
+                        //     &page_title,
+                        //     &mut connection,
+                        //     prev_offset,
+                        //     curr_length,
+                        // ) {
+                        //     Ok(_) => (),
+                        //     Err(e) => panic!("Error adding to lookup table: {:?}", e),
+                        // }
+                        match self.add_to_adj_list(&page_title, links, &mut adj_list) {
                             Ok(_) => (),
                             Err(e) => panic!("Error adding to lookup table: {:?}", e),
                         }
-
-                        println!(
-                            "Title: {}, num_links: {}, byte_offset: {}, length: {} ",
-                            page_title,
-                            links.len(),
-                            prev_offset,
-                            curr_length
-                        );
+                        // println!(
+                        //     "Title: {}, num_links: {}, byte_offset: {}, length: {} ",
+                        //     page_title,
+                        //     links.len(),
+                        //     prev_offset,
+                        //     curr_length
+                        // );
 
                         //update prev_offset and prev_length
                         prev_offset = self.compute_byte_offset(prev_offset, prev_length);
@@ -154,22 +158,55 @@ impl Parser {
         }
     }
 
+    fn add_to_adj_list(
+        &self,
+        title: &str,
+        links: Vec<String>,
+        file: &mut File,
+    ) -> Result<(), std::io::Error> {
+        let mut line = title.to_string() + "|";
+        for link in links.iter() {
+            line.push_str(&link);
+            line.push_str(",");
+        }
+        line.push_str("\n");
+        match file.write_all(line.as_bytes()) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        };
+
+        Ok(())
+    }
     fn compute_byte_offset(&self, prev_offset: usize, prev_length: usize) -> usize {
         FILE_HEADER_SIZE + prev_offset + prev_length
     }
     fn compute_length(&self, num_links: usize) -> usize {
         NODE_HEADER_SIZE + num_links * LINK_SIZE
     }
-    fn extract_links_from_text(&self, mut page_text: Vec<String>) -> Vec<String> {
+    fn extract_links_from_text(&self, page_text: Vec<String>) -> Vec<String> { //move this into main pre-process function
         let mut links: Vec<String> = Vec::new();
         for line in page_text.iter() {
             let words = line.split_whitespace();
             for word in words {
-                if word.starts_with("[[") && word.ends_with("]]") {
-                    links.push(word.trim_matches(|c| c == '[' || c == ']').into());
+                if word.starts_with("[[") {
+                    let mut current_word: Vec<char> = Vec::new();
+                    for c in word.chars() {
+                        if current_word
+                        current_word.push(c);
+
+                    }
                 }
+                links.push(word.trim_matches(|c| c == '[' || c == ']').into());
             }
         }
         links
     }
+    fn extract_links(&self, word: &str)-> Vec<String>  //Need to update this to handle nested links in the case of Files
+        //Need to figure out how to do this efficiently... stack / recursion / idk
+        //if we encounter [[ then we run this function to extract the link.
+        // | means that there are aliases for words
+        // ]] means that we are done with the link
+
+    
+
 }
