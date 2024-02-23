@@ -17,7 +17,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         File::create(BINARY_GRAPH_PATH)?,
         db_url,
     );
-    parser.pre_process_file();
+    parser.pre_process_file(); //
+    let link = parser.extract_links("[[File:WilhelmWeitling.jpg|thumb|[[Wilhelm Weitling]] is an example of a writer who added to anarchist theory without using the exact term.{{sfn|Carlson|1972|pp=22–23}}]]");
+    println!("{:?}", link);
 
     Ok(())
 }

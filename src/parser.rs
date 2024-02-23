@@ -6,6 +6,7 @@ use diesel::{connection, prelude::*};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::cell::RefCell;
+use std::fmt::format;
 use std::fs::{self, File};
 use std::io::{BufReader, Error, Write};
 use std::thread::current;
@@ -13,6 +14,8 @@ use std::thread::current;
 const FILE_HEADER_SIZE: usize = 4 * 4;
 const NODE_HEADER_SIZE: usize = 4 * 4;
 const LINK_SIZE: usize = 4;
+const LEFT_BRACE: char = '[';
+const RIGHT_BRACE: char = ']';
 
 pub struct Parser {
     file_reader: quick_xml::Reader<std::io::BufReader<File>>,
@@ -183,17 +186,16 @@ impl Parser {
     fn compute_length(&self, num_links: usize) -> usize {
         NODE_HEADER_SIZE + num_links * LINK_SIZE
     }
-    fn extract_links_from_text(&self, page_text: Vec<String>) -> Vec<String> { //move this into main pre-process function
+    fn extract_links_from_text(&self, page_text: Vec<String>) -> Vec<String> {
+        //move this into main pre-process function
         let mut links: Vec<String> = Vec::new();
         for line in page_text.iter() {
             let words = line.split_whitespace();
             for word in words {
                 if word.starts_with("[[") {
-                    let mut current_word: Vec<char> = Vec::new();
-                    for c in word.chars() {
-                        if current_word
-                        current_word.push(c);
-
+                    match self.extract_links(word) {
+                        Some(link) => links.push(link),
+                        None => (),
                     }
                 }
                 links.push(word.trim_matches(|c| c == '[' || c == ']').into());
@@ -201,12 +203,46 @@ impl Parser {
         }
         links
     }
-    fn extract_links(&self, word: &str)-> Vec<String>  //Need to update this to handle nested links in the case of Files
-        //Need to figure out how to do this efficiently... stack / recursion / idk
-        //if we encounter [[ then we run this function to extract the link.
-        // | means that there are aliases for words
-        // ]] means that we are done with the link
+    pub fn extract_links(&self, mut word: &str) -> Option<String> {
+        //TODO: FIX THIS FUNCTION RAAHHHH
+        if word.chars().count() < 4 {
+            return None;
+        }
+        let start_byte = word.char_indices().nth(2)?.0; // Get byte index of the 3rd char
+        let end_byte = word.char_indices().nth_back(2)?.0; // Get byte index of the 3rd-last char
+        word = &word[start_byte..end_byte];
+        if !word.contains("[[") {
+            //no more braces, We are only interested if it is a link or a category.
+            if !word.contains(':') {
+                if word.contains('|') {
+                    let mut split = word.split('|');
+                    let link = split.next().unwrap();
 
-    
+                    Some(word.to_string())
+                } else {
+                    Some(word.to_string()) // no pipe and no colon meaning it is just the link.
+                }
+            } else if word.contains("Category:") {
+                Some(word.to_string())
+            } else {
+                None // we encountered either media, file, template, or a wikipedia namespace / special page
+            }
+        } else {
+            println!("Nested link found: {}", word);
+            let start_byte = word
+                .find(LEFT_BRACE)
+                .expect("No left brace found when expected");
+            let end_byte = word
+                .find(RIGHT_BRACE)
+                .expect("No right brace found when expected");
+            word = &word[start_byte..end_byte];
+            return self.extract_links(word);
+        }
+    } //Need to update this to handle nested links in the case of Files
+      //Need to figure out how to do this efficiently... stack / recursion / idk
+      //if we encounter [[ then we run this function to extract the link.
+      // | means that there are aliases for words
+      // ]] means that we are done with the link
 
+    //prob better to write own simple recursive parser that will return the root text
 }
