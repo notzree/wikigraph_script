@@ -45,7 +45,7 @@ impl Parser {
         let mut prev_length: usize = 0;
 
         loop {
-            if itr > 300 {
+            if itr > 115 {
                 break;
             }
             match self.file_reader.read_event_into(&mut buf) {
@@ -100,7 +100,9 @@ impl Parser {
                         if is_redirect {
                             continue;
                         }
+                        println!("Title: {}", page_title);
                         let links = self.extract_links_from_text(page_txt);
+                        println!("Links: {:?}", links);
                         let curr_length = self.compute_length(links.len());
                         //write to adjacency list + database
                         // match self.add_to_look_up_table(
@@ -169,11 +171,11 @@ impl Parser {
     ) -> Result<(), std::io::Error> {
         let mut line = title.to_string() + "|";
         for link in links.iter() {
-            line.push_str(&link);
-            line.push_str(",");
+            line.push_str(link);
+            line.push(',');
         }
-        line.push_str("\n");
-        match file.write_all(line.as_bytes()) {
+        line.push('\n');
+        let _ = match file.write_all(line.as_bytes()) {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         };
@@ -186,19 +188,28 @@ impl Parser {
     fn compute_length(&self, num_links: usize) -> usize {
         NODE_HEADER_SIZE + num_links * LINK_SIZE
     }
-    fn extract_links_from_text(&self, page_text: Vec<String>) -> Vec<String> {
+    pub fn extract_links_from_text(&self, page_text: Vec<String>) -> Vec<String> {
         //move this into main pre-process function
+
         let mut links: Vec<String> = Vec::new();
-        for line in page_text.iter() {
-            let words = line.split_whitespace();
-            for word in words {
-                if word.starts_with("[[") {
-                    match self.extract_links(word) {
-                        Some(link) => links.push(link),
-                        None => (),
-                    }
+        let mut curr_word = String::new();
+        let mut left = 0;
+        let mut right = 0;
+        for word in page_text.iter() {
+            //we are getting somewhere, it is currently repeatedly counting the same thing
+            //we have to rmbr that we there can be multiple words inside a link.
+            //so we keep track of the left and right index of the link and then extract the link from the word.
+            //this is still buggy but have to fix.
+            for c in word.chars() {
+                curr_word.push(c);
+                if curr_word == "[[" {
+                    left = curr_word.len();
                 }
-                links.push(word.trim_matches(|c| c == '[' || c == ']').into());
+                if curr_word.ends_with("]]") {
+                    right = curr_word.len();
+                    links.push(word[left..right].to_string());
+                    curr_word.clear();
+                }
             }
         }
         links
