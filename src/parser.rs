@@ -186,6 +186,7 @@ impl Parser {
         NODE_HEADER_SIZE + num_links * LINK_SIZE
     }
     fn extract_links_from_text(&self, text: String) -> Vec<String> {
+        //TODO: Fix the function properly to exclude file aliases (see the "a" )
         let mut links: Vec<String> = Vec::new();
         let mut current_link = String::new();
         let mut inside_link = false;
@@ -196,6 +197,7 @@ impl Parser {
                 '[' if chars.peek() == Some(&'[') => {
                     // Detect starting "[["
                     chars.next(); // Skip the next '[' as it's part of the marker
+
                     inside_link = true;
                     current_link.clear();
                 }
@@ -207,7 +209,17 @@ impl Parser {
                         inside_link = false;
                     }
                 }
-                _ if inside_link => current_link.push(c),
+                _ if inside_link => {
+                    current_link.push(c);
+                    if current_link == "File:"
+                        || current_link == "Wikipedia:"
+                        || current_link == "WP:"
+                    {
+                        // we realize that we are in either a file, template, or wikipedia article namespace. We reseet
+                        inside_link = false;
+                        current_link.clear();
+                    }
+                }
                 _ => {}
             }
         }
