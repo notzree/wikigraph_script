@@ -5,11 +5,8 @@ use diesel::pg::PgConnection;
 use diesel::{connection, prelude::*};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
-use std::cell::RefCell;
-use std::fmt::format;
 use std::fs::{self, File};
 use std::io::{BufReader, Error, Write};
-use std::thread::current;
 //All sizes are in bytes. ie: 4 * 4 = 16 bytes = 4 integers.
 const FILE_HEADER_SIZE: usize = 4 * 4;
 const NODE_HEADER_SIZE: usize = 4 * 4;
@@ -59,7 +56,7 @@ impl Parser {
                 Ok(Event::Start(e)) => {
                     if e.name().as_ref() == b"page" {
                         let mut page_title = String::new();
-                        let mut page_txt: Vec<String> = Vec::new();
+                        let mut page_txt: String = String::new();
                         let mut is_redirect: bool = false;
                         buf.clear();
                         loop {
@@ -75,7 +72,7 @@ impl Parser {
                                     if e.name().as_ref() == b"text" {
                                         let text_event = self.file_reader.read_event_into(&mut buf);
                                         if let Ok(Event::Text(e)) = text_event {
-                                            page_txt.push(e.unescape().unwrap().into_owned());
+                                            page_txt = e.unescape().unwrap().into_owned();
                                         }
                                     }
                                     continue;
@@ -188,32 +185,36 @@ impl Parser {
     fn compute_length(&self, num_links: usize) -> usize {
         NODE_HEADER_SIZE + num_links * LINK_SIZE
     }
-    pub fn extract_links_from_text(&self, page_text: Vec<String>) -> Vec<String> {
-        //move this into main pre-process function
-
+    fn extract_links_from_text(&self, text: String) -> Vec<String> {
         let mut links: Vec<String> = Vec::new();
-        let mut curr_word = String::new();
-        let mut left = 0;
-        let mut right = 0;
-        for word in page_text.iter() {
-            //we are getting somewhere, it is currently repeatedly counting the same thing
-            //we have to rmbr that we there can be multiple words inside a link.
-            //so we keep track of the left and right index of the link and then extract the link from the word.
-            //this is still buggy but have to fix.
-            for c in word.chars() {
-                curr_word.push(c);
-                if curr_word == "[[" {
-                    left = curr_word.len();
+        let mut current_link = String::new();
+        let mut inside_link = false;
+
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '[' if chars.peek() == Some(&'[') => {
+                    // Detect starting "[["
+                    chars.next(); // Skip the next '[' as it's part of the marker
+                    inside_link = true;
+                    current_link.clear();
                 }
-                if curr_word.ends_with("]]") {
-                    right = curr_word.len();
-                    links.push(word[left..right].to_string());
-                    curr_word.clear();
+                ']' if chars.peek() == Some(&']') => {
+                    // Detect ending "]]"
+                    chars.next(); // Skip the next ']' as it's part of the marker
+                    if inside_link {
+                        links.push(current_link.clone());
+                        inside_link = false;
+                    }
                 }
+                _ if inside_link => current_link.push(c),
+                _ => {}
             }
         }
+
         links
     }
+
     pub fn extract_links(&self, mut word: &str) -> Option<String> {
         //TODO: FIX THIS FUNCTION RAAHHHH
         if word.chars().count() < 4 {
