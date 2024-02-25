@@ -38,7 +38,7 @@ impl Parser {
             .unwrap_or_else(|_| panic!("Error connecting to {}", self.connection_string));
         let mut buf: Vec<u8> = Vec::new();
         let mut itr = 0;
-        let mut prev_offset: usize = 0;
+        let mut prev_offset: usize = 16;
         let mut prev_length: usize = 0;
 
         loop {
@@ -97,10 +97,9 @@ impl Parser {
                         if is_redirect {
                             continue;
                         }
-                        println!("Title: {}", page_title);
                         let links = self.extract_links_from_text(page_txt);
-                        println!("Links: {:?}", links);
                         let curr_length = self.compute_length(links.len());
+                        prev_offset = self.compute_byte_offset(prev_offset, prev_length);
                         //write to adjacency list + database
                         // match self.add_to_look_up_table(
                         //     &page_title,
@@ -111,20 +110,20 @@ impl Parser {
                         //     Ok(_) => (),
                         //     Err(e) => panic!("Error adding to lookup table: {:?}", e),
                         // }
-                        match self.add_to_adj_list(&page_title, links, &mut adj_list) {
-                            Ok(_) => (),
-                            Err(e) => panic!("Error adding to lookup table: {:?}", e),
-                        }
-                        // println!(
-                        //     "Title: {}, num_links: {}, byte_offset: {}, length: {} ",
-                        //     page_title,
-                        //     links.len(),
-                        //     prev_offset,
-                        //     curr_length
-                        // );
-
+                        // match self.add_to_adj_list(&page_title, links, &mut adj_list) {
+                        //     Ok(_) => (),
+                        //     Err(e) => panic!("Error adding to lookup table: {:?}", e),
+                        // }
+                        println!(
+                            "title:{} | links: {} offset: {} length: {}, prev_length: {}",
+                            page_title,
+                            links.len(),
+                            prev_offset,
+                            curr_length,
+                            prev_length
+                        );
                         //update prev_offset and prev_length
-                        prev_offset = self.compute_byte_offset(prev_offset, prev_length);
+
                         prev_length = curr_length;
                     }
                 }
@@ -139,52 +138,6 @@ impl Parser {
     }
     //Second pass to take adjacency list + lookup table -> graph in binary format.
     pub fn create_graph(&self) {}
-    fn add_to_look_up_table(
-        &self,
-        title: &str,
-        connection: &mut PgConnection,
-        byteoffset: usize,
-        num_links: usize,
-    ) -> Result<(), diesel::result::Error> {
-        let lookup_entry = LookupEntry {
-            title: title.to_string(),
-            byteoffset: byteoffset.try_into().unwrap(), // in bytes
-            length: (4 + 4 * num_links).try_into().unwrap(), //4 bytes for node header + 4 bytes (1 int) for each link
-        };
-        match insert_into(schema::lookup::table)
-            .values(&lookup_entry)
-            .execute(connection)
-        {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e),
-        }
-    }
-
-    fn add_to_adj_list(
-        &self,
-        title: &str,
-        links: Vec<String>,
-        file: &mut File,
-    ) -> Result<(), std::io::Error> {
-        let mut line = title.to_string() + "|";
-        for link in links.iter() {
-            line.push_str(link);
-            line.push(',');
-        }
-        line.push('\n');
-        let _ = match file.write_all(line.as_bytes()) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e),
-        };
-
-        Ok(())
-    }
-    fn compute_byte_offset(&self, prev_offset: usize, prev_length: usize) -> usize {
-        FILE_HEADER_SIZE + prev_offset + prev_length
-    }
-    fn compute_length(&self, num_links: usize) -> usize {
-        NODE_HEADER_SIZE + num_links * LINK_SIZE
-    }
     fn extract_links_from_text(&self, text: String) -> Vec<String> {
         //TODO: Fix the function properly to exclude file aliases (see the "a" )
         let mut links: Vec<String> = Vec::new();
@@ -232,46 +185,49 @@ impl Parser {
         links
     }
 
-    pub fn extract_links(&self, mut word: &str) -> Option<String> {
-        //TODO: FIX THIS FUNCTION RAAHHHH
-        if word.chars().count() < 4 {
-            return None;
+    fn add_to_look_up_table(
+        &self,
+        title: &str,
+        connection: &mut PgConnection,
+        byteoffset: usize,
+        num_links: usize,
+    ) -> Result<(), diesel::result::Error> {
+        let lookup_entry = LookupEntry {
+            title: title.to_string(),
+            byteoffset: byteoffset.try_into().unwrap(), // in bytes
+            length: (4 + 4 * num_links).try_into().unwrap(), //4 bytes for node header + 4 bytes (1 int) for each link
+        };
+        match insert_into(schema::lookup::table)
+            .values(&lookup_entry)
+            .execute(connection)
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
         }
-        let start_byte = word.char_indices().nth(2)?.0; // Get byte index of the 3rd char
-        let end_byte = word.char_indices().nth_back(2)?.0; // Get byte index of the 3rd-last char
-        word = &word[start_byte..end_byte];
-        if !word.contains("[[") {
-            //no more braces, We are only interested if it is a link or a category.
-            if !word.contains(':') {
-                if word.contains('|') {
-                    let mut split = word.split('|');
-                    let link = split.next().unwrap();
-
-                    Some(word.to_string())
-                } else {
-                    Some(word.to_string()) // no pipe and no colon meaning it is just the link.
-                }
-            } else if word.contains("Category:") {
-                Some(word.to_string())
-            } else {
-                None // we encountered either media, file, template, or a wikipedia namespace / special page
-            }
-        } else {
-            println!("Nested link found: {}", word);
-            let start_byte = word
-                .find(LEFT_BRACE)
-                .expect("No left brace found when expected");
-            let end_byte = word
-                .find(RIGHT_BRACE)
-                .expect("No right brace found when expected");
-            word = &word[start_byte..end_byte];
-            return self.extract_links(word);
+    }
+    fn add_to_adj_list(
+        &self,
+        title: &str,
+        links: Vec<String>,
+        file: &mut File,
+    ) -> Result<(), std::io::Error> {
+        let mut line = title.to_string() + "|";
+        for link in links.iter() {
+            line.push_str(link);
+            line.push(',');
         }
-    } //Need to update this to handle nested links in the case of Files
-      //Need to figure out how to do this efficiently... stack / recursion / idk
-      //if we encounter [[ then we run this function to extract the link.
-      // | means that there are aliases for words
-      // ]] means that we are done with the link
+        line.push('\n');
+        let _ = match file.write_all(line.as_bytes()) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        };
 
-    //prob better to write own simple recursive parser that will return the root text
+        Ok(())
+    }
+    fn compute_byte_offset(&self, prev_offset: usize, prev_length: usize) -> usize {
+        prev_offset + prev_length
+    }
+    fn compute_length(&self, num_links: usize) -> usize {
+        NODE_HEADER_SIZE + num_links * LINK_SIZE
+    }
 }
