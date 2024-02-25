@@ -205,6 +205,11 @@ impl Parser {
                     // Detect ending "]]"
                     chars.next(); // Skip the next ']' as it's part of the marker
                     if inside_link {
+                        if current_link.contains('|') {
+                            let mut split = current_link.split('|');
+                            let link = split.next().unwrap();
+                            current_link = link.to_string();
+                        }
                         links.push(current_link.clone());
                         inside_link = false;
                     }
