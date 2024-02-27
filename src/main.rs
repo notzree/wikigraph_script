@@ -11,13 +11,10 @@ const BINARY_GRAPH_PATH: &str = "/wikigraph/raw_data/binary_graph.bin";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let mut parser = Parser::new(
-        File::open(FILE_PATH)?,
-        File::create(BINARY_GRAPH_PATH)?,
-        db_url,
-    );
+    let mut parser = Parser::new(File::open(FILE_PATH)?, BINARY_GRAPH_PATH.to_owned(), db_url);
     let start = Utc::now();
-    parser.pre_process_file();
+    parser.pre_process_file().unwrap();
+    // parser.create_graph();
     let end = Utc::now();
 
     // Calculate and print the duration
