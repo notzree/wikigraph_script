@@ -21,8 +21,11 @@ impl<'a> MultiPeek<'a> {
             peek_distance,
         }
     }
-    pub fn peek(&self, n: usize) -> Option<&char> {
+    pub fn peek_at(&self, n: usize) -> Option<&char> {
         self.buffer.get(n)
+    }
+    pub fn peek_until(&self, n: usize) -> &[char] {
+        &self.buffer[..n]
     }
     pub fn next(&mut self) -> Option<char> {
         if let Some(next_char) = self.iter.next() {
