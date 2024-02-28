@@ -1,4 +1,5 @@
 use crate::models::LookupEntry;
+use crate::multipeek::MultiPeek;
 use crate::schema;
 use crate::schema::lookup::dsl::*;
 use byteorder::{LittleEndian, WriteBytesExt};
@@ -53,10 +54,10 @@ impl Parser {
         let mut count = 0;
 
         loop {
-            // if itr > 115 {
-            //     self.set_count(count);
-            //     return Ok(());
-            // }
+            if count > 1000 {
+                self.set_count(count);
+                return Ok(());
+            }
             match self.file_reader.read_event_into(&mut buf) {
                 Err(e) => panic!(
                     "Error at position {}: {:?}",
@@ -81,8 +82,16 @@ impl Parser {
                                     if e.name().as_ref() == b"title" {
                                         let text_event = self.file_reader.read_event_into(&mut buf);
                                         if let Ok(Event::Text(e)) = text_event {
+                                            if e.unescape()
+                                                .unwrap()
+                                                .into_owned()
+                                                .contains("Wikipedia:")
+                                            {
+                                                break;
+                                            }
                                             page_title = e.unescape().unwrap().into_owned();
                                         }
+
                                         continue;
                                     }
                                     if e.name().as_ref() == b"text" {
@@ -113,25 +122,26 @@ impl Parser {
                         if is_redirect {
                             continue;
                         }
-                        let links = self.extract_links_from_text(page_txt);
-                        let curr_length = self.compute_length(links.len());
-                        prev_offset = self.compute_byte_offset(prev_offset, prev_length);
-                        // write to adjacency list + database
-                        match self.add_to_look_up_table(
-                            &page_title,
-                            &mut connection,
-                            prev_offset,
-                            curr_length,
-                        ) {
-                            Ok(_) => (),
-                            Err(e) => panic!("Error adding to lookup table: {:?}", e),
-                        }
-                        match self.add_to_adj_list(&page_title, links, &mut adj_list) {
-                            Ok(_) => (),
-                            Err(e) => panic!("Error adding to lookup table: {:?}", e),
-                        }
+                        println!("{}", page_txt);
+                        // let links = self.extract_links_from_text(page_txt);
+                        // let curr_length = self.compute_length(links.len());
+                        // prev_offset = self.compute_byte_offset(prev_offset, prev_length);
+                        // // write to adjacency list + database
+                        // match self.add_to_look_up_table(
+                        //     &page_title,
+                        //     &mut connection,
+                        //     prev_offset,
+                        //     curr_length,
+                        // ) {
+                        //     Ok(_) => (),
+                        //     Err(e) => panic!("Error adding to lookup table: {:?}", e),
+                        // }
+                        // match self.add_to_adj_list(&page_title, links, &mut adj_list) {
+                        //     Ok(_) => (),
+                        //     Err(e) => panic!("Error adding to lookup table: {:?}", e),
+                        // }
 
-                        prev_length = curr_length;
+                        // prev_length = curr_length;
                         count += 1;
                     }
                 }
@@ -227,6 +237,15 @@ impl Parser {
                         inside_link = false;
                     }
                 }
+                '<' => {
+                    //we encounter a tag, based on the markup, we can skip the content of the tag...
+                    let mut multipeek = MultiPeek::new(chars.peekable(), 20);
+                    //TODO:
+                    //Need a multipeek function that will let me compare a string ie "<syntaxhighlight"
+                    // to the values of the next n characters in the iterator (matching the length of the string)
+                    //maybe like multipeek.peek(0..n)
+                }
+
                 _ if inside_link => {
                     //TODO: LOOK AT USS ASPRO SSN-648 The parser seems to be parsing content that is not part of the page.
                     current_link.push(c);

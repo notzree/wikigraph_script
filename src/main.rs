@@ -1,5 +1,6 @@
 use std::fs::File;
 mod models;
+mod multipeek;
 mod parser;
 mod schema;
 use parser::Parser;
