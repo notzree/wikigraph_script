@@ -11,6 +11,7 @@ use quick_xml::reader::Reader;
 use std::fs::OpenOptions;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Error, Seek, SeekFrom, Write};
+use std::process::exit;
 use std::thread::current;
 
 //All sizes are in bytes. ie: 4 * 4 = 16 bytes = 4 integers.
@@ -122,8 +123,12 @@ impl Parser {
                         if is_redirect {
                             continue;
                         }
-                        println!("{}", page_txt);
-                        // let links = self.extract_links_from_text(page_txt);
+                        // println!("{}", page_txt);
+                        if page_title.is_empty() || page_txt.is_empty() {
+                            continue;
+                        }
+                        let links = self.extract_links_from_text(page_txt);
+                        println!("Page title: {} | {:?}", page_title, links);
                         // let curr_length = self.compute_length(links.len());
                         // prev_offset = self.compute_byte_offset(prev_offset, prev_length);
                         // // write to adjacency list + database
@@ -209,7 +214,6 @@ impl Parser {
         graph.write_i32::<LittleEndian>(num_links).unwrap();
     }
     fn extract_links_from_text(&self, text: String) -> Vec<String> {
-        //TODO: Fix the function properly to exclude file aliases (see the "a" )
         let mut links: Vec<String> = Vec::new();
         let mut current_link = String::new();
         let mut inside_link = false;
@@ -218,13 +222,18 @@ impl Parser {
         while let Some(c) = chars.next() {
             match c {
                 '[' if chars.peek() == Some(&'[') => {
+                    //detect starting links
                     // Detect starting "[["
                     chars.next(); // Skip the next '[' as it's part of the marker
-
+                    if chars.peek() == Some(&':') {
+                        //skip wikipedia links
+                        continue;
+                    }
                     inside_link = true;
                     current_link.clear();
                 }
                 ']' if chars.peek() == Some(&']') => {
+                    //end links
                     // Detect ending "]]"
                     chars.next(); // Skip the next ']' as it's part of the marker
                     if inside_link {
@@ -239,11 +248,35 @@ impl Parser {
                 }
                 '<' => {
                     //we encounter a tag, based on the markup, we can skip the content of the tag...
-                    let mut multipeek = MultiPeek::new(chars.peekable(), 20);
-                    //TODO:
-                    //Need a multipeek function that will let me compare a string ie "<syntaxhighlight"
-                    // to the values of the next n characters in the iterator (matching the length of the string)
-                    //maybe like multipeek.peek(0..n)
+                    let mut multipeek = MultiPeek::new(chars.clone(), 15);
+                    // print!("multipeek value {:?}", multipeek.peek_until(20));
+                    if multipeek.peek_until(15).contains("syntaxhighlight") {
+                        //Skip <syntaxhighlight> tag
+                        //todo: skip the content until thclosing </syntaxhighlight> tag
+                        loop {
+                            if multipeek.is_empty() {
+                                break;
+                            }
+                            if multipeek.peek_until(15).contains("</syntaxhighlight>") {
+                                break;
+                            }
+                            multipeek.next();
+                        }
+                    }
+                }
+                '{' if chars.peek() == Some(&'{') => {
+                    //
+                    //link or template, skip until end
+                    let mut multipeek = MultiPeek::new(chars.clone(), 2);
+                    loop {
+                        if multipeek.is_empty() {
+                            break;
+                        }
+                        if multipeek.peek_until(2).contains("}}") {
+                            break;
+                        }
+                        multipeek.next();
+                    }
                 }
 
                 _ if inside_link => {
