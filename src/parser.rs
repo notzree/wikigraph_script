@@ -6,6 +6,7 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use diesel::insert_into;
 use diesel::pg::PgConnection;
 use diesel::{connection, prelude::*};
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::fs::OpenOptions;
@@ -13,6 +14,7 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Error, Seek, SeekFrom, Write};
 use std::process::exit;
 use std::thread::current;
+use std::{cmp::min, fmt::Write as fmtWrite};
 
 //All sizes are in bytes. ie: 4 * 4 = 16 bytes = 4 integers.
 const FILE_HEADER_SIZE: usize = 4 * 4;
@@ -21,6 +23,7 @@ const LINK_SIZE: usize = 4;
 const LEFT_BRACE: char = '[';
 const RIGHT_BRACE: char = ']';
 const ADJACENCY_LIST_PATH: &str = "adjacency_list.txt";
+const NUM_ARTICLES: u64 = 6789472;
 
 pub struct Parser {
     file_reader: quick_xml::Reader<std::io::BufReader<File>>,
@@ -45,6 +48,17 @@ impl Parser {
     }
     //First pass to generate lookup table with computed byte offsets + create text file with adjacency list
     pub fn pre_process_file(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let bar = ProgressBar::new(NUM_ARTICLES);
+        bar.set_style(
+            ProgressStyle::with_template(
+                "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
+            )
+            .unwrap()
+            .with_key("eta", |state: &ProgressState, w: &mut dyn fmtWrite| {
+                write!(w, "{:.1}hrs", state.eta().as_secs_f64() / 3600.0).unwrap()
+            })
+            .progress_chars("#>-"),
+        );
         let mut adj_list = File::create(ADJACENCY_LIST_PATH).unwrap();
 
         let mut connection = PgConnection::establish(&self.connection_string)
@@ -55,10 +69,6 @@ impl Parser {
         let mut count = 0;
 
         loop {
-            if count > 1000 {
-                self.set_count(count);
-                return Ok(());
-            }
             match self.file_reader.read_event_into(&mut buf) {
                 Err(e) => panic!(
                     "Error at position {}: {:?}",
@@ -69,6 +79,7 @@ impl Parser {
                 Ok(Event::Eof) => {
                     self.set_count(count);
                     println!("Count: {}", count);
+                    bar.finish();
                     return Ok(());
                 }
                 Ok(Event::Start(e)) => {
@@ -120,33 +131,45 @@ impl Parser {
                             }
                             buf.clear();
                         }
-                        if is_redirect {
+                        if is_redirect
+                            || page_title.is_empty()
+                            || page_txt.is_empty()
+                            || page_title.contains("Template:")
+                            || page_title.contains("Wikipedia:")
+                            || page_title.contains("File:")
+                            || page_title.contains("WP:")
+                            || page_title.contains("User:")
+                            || page_title.contains("Help:")
+                            || page_title.contains("(disambiguation)")
+                            || page_txt.contains("{{disambiguation}}")
+                            || page_txt.contains("{{disambig")
+                        {
+                            //skip redirect pages, empty pages, templates, wikipedia pages, files, user pages, help pages, disambiguation pages
                             continue;
                         }
-                        // println!("{}", page_txt);
-                        if page_title.is_empty() || page_txt.is_empty() {
+                        if page_title.len() > 255 {
+                            println!("Page title length exceeded for : {}", page_title);
                             continue;
                         }
                         let links = self.extract_links_from_text(page_txt);
-                        println!("Page title: {} | {:?}", page_title, links);
-                        // let curr_length = self.compute_length(links.len());
-                        // prev_offset = self.compute_byte_offset(prev_offset, prev_length);
-                        // // write to adjacency list + database
-                        // match self.add_to_look_up_table(
-                        //     &page_title,
-                        //     &mut connection,
-                        //     prev_offset,
-                        //     curr_length,
-                        // ) {
-                        //     Ok(_) => (),
-                        //     Err(e) => panic!("Error adding to lookup table: {:?}", e),
-                        // }
-                        // match self.add_to_adj_list(&page_title, links, &mut adj_list) {
-                        //     Ok(_) => (),
-                        //     Err(e) => panic!("Error adding to lookup table: {:?}", e),
-                        // }
-
-                        // prev_length = curr_length;
+                        let curr_length = self.compute_length(links.len());
+                        prev_offset = self.compute_byte_offset(prev_offset, prev_length);
+                        // write to adjacency list + database
+                        match self.add_to_look_up_table(
+                            &page_title,
+                            &mut connection,
+                            prev_offset,
+                            curr_length,
+                        ) {
+                            Ok(_) => (),
+                            Err(e) => panic!("Error adding to lookup table: {:?}", e),
+                        }
+                        match self.add_to_adj_list(&page_title, links, &mut adj_list) {
+                            Ok(_) => (),
+                            Err(e) => panic!("Error adding to lookup table: {:?}", e),
+                        }
+                        bar.inc(1);
+                        prev_length = curr_length;
                         count += 1;
                     }
                 }
@@ -161,7 +184,17 @@ impl Parser {
     //Second pass to take adjacency list + lookup table -> graph in binary format.
     pub fn create_graph(&self) {
         const FILE_VERSION: i32 = 1;
-
+        let bar = ProgressBar::new(NUM_ARTICLES);
+        bar.set_style(
+            ProgressStyle::with_template(
+                "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
+            )
+            .unwrap()
+            .with_key("eta", |state: &ProgressState, w: &mut dyn fmtWrite| {
+                write!(w, "{:.1}hrs", state.eta().as_secs_f64() / 3600.0).unwrap()
+            })
+            .progress_chars("#>-"),
+        );
         let mut connection = PgConnection::establish(&self.connection_string)
             .unwrap_or_else(|_| panic!("Error connecting to {}", self.connection_string));
         let file = File::open(ADJACENCY_LIST_PATH).unwrap();
@@ -179,11 +212,12 @@ impl Parser {
         graph.write_i32::<LittleEndian>(0).unwrap();
 
         for line in BufReader::new(file).lines() {
+            bar.inc(1);
             match line {
                 Ok(line) => {
                     let mut split = line.split('|');
                     let t = split.next().unwrap();
-                    let current_position = graph.seek(SeekFrom::Current(0)).unwrap();
+                    let current_position = graph.stream_position().unwrap();
                     let lookup_entry = self.look_up(t, &mut connection).unwrap();
                     if current_position != lookup_entry.byteoffset as u64 {
                         panic!(
@@ -205,6 +239,7 @@ impl Parser {
                 Err(e) => panic!("Error reading line: {:?}", e),
             }
         }
+        bar.finish();
     }
     fn write_node_header(graph: &mut File, num_links: i32) {
         //3 integers are unused. The number of links is the 4th integer. first integer is used for traversal.
