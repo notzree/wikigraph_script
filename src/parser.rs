@@ -43,7 +43,7 @@ impl Parser {
             count: 0,
         }
     }
-    fn set_count(&mut self, count: i32) {
+    pub fn set_count(&mut self, count: i32) {
         self.count = count;
     }
     //First pass to generate lookup table with computed byte offsets + create text file with adjacency list
@@ -64,7 +64,7 @@ impl Parser {
         let mut connection = PgConnection::establish(&self.connection_string)
             .unwrap_or_else(|_| panic!("Error connecting to {}", self.connection_string));
         let mut buf: Vec<u8> = Vec::new();
-        let mut prev_offset: usize = 0;
+        let mut prev_offset: usize = FILE_HEADER_SIZE;
         let mut prev_length: usize = 0;
         let mut count = 0;
 
@@ -140,6 +140,7 @@ impl Parser {
                             || page_title.contains("WP:")
                             || page_title.contains("User:")
                             || page_title.contains("Help:")
+                            || page_title.contains("Draft:")
                             || page_title.contains("(disambiguation)")
                             || page_txt.contains("{{disambiguation}}")
                             || page_txt.contains("{{disambig")
@@ -210,14 +211,14 @@ impl Parser {
         //2 integers are unused.
         graph.write_i32::<LittleEndian>(0).unwrap();
         graph.write_i32::<LittleEndian>(0).unwrap();
-
+        println!("{:?}", graph.stream_position().unwrap());
         for line in BufReader::new(file).lines() {
             bar.inc(1);
             match line {
                 Ok(line) => {
                     let mut split = line.split('|');
                     let t = split.next().unwrap();
-                    let current_position = graph.stream_position().unwrap();
+                    let current_position = graph.stream_position().unwrap() - 16; //-16 bytes is only here because I failed to take into account the file header during pre-processing. ?reminder Will remove later on.
                     let lookup_entry = self.look_up(t, &mut connection).unwrap();
                     if current_position != lookup_entry.byteoffset as u64 {
                         panic!(
@@ -230,6 +231,9 @@ impl Parser {
                     Self::write_node_header(&mut graph, num_links);
                     for link in links {
                         let link = link.to_string();
+                        //Link does not work because of capitalization. Have to think of a way to fix this. Issue is some links are case sensitive, other links are not. Maybe the play is to just remove cases entirely? but idk
+                        //TODO: Fix link issue because of capitalization AND pluraization... 
+                        println!("Looking up: {}", link);
                         let lookup_entry = self.look_up(&link, &mut connection).unwrap();
                         graph
                             .write_i32::<LittleEndian>(lookup_entry.byteoffset)
@@ -286,8 +290,6 @@ impl Parser {
                     let mut multipeek = MultiPeek::new(chars.clone(), 15);
                     // print!("multipeek value {:?}", multipeek.peek_until(20));
                     if multipeek.peek_until(15).contains("syntaxhighlight") {
-                        //Skip <syntaxhighlight> tag
-                        //todo: skip the content until thclosing </syntaxhighlight> tag
                         loop {
                             if multipeek.is_empty() {
                                 break;
@@ -358,7 +360,7 @@ impl Parser {
         matching_title: &str,
         connection: &mut PgConnection,
     ) -> Result<LookupEntry, diesel::result::Error> {
-        lookup.filter(title.eq(matching_title)).first(connection)
+        lookup.filter(title.ilike(matching_title)).first(connection)
     }
     fn add_to_adj_list(
         &self,
