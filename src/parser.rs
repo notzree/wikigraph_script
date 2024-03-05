@@ -1,8 +1,9 @@
-use crate::models::LookupEntry;
+use crate::models::{LookupEntry, RedirectEntry};
 use crate::multipeek::MultiPeek;
-use crate::schema;
 use crate::schema::lookup::dsl::*;
+use crate::schema::redirect::dsl::*;
 use byteorder::{LittleEndian, WriteBytesExt};
+use core::panic;
 use diesel::insert_into;
 use diesel::pg::PgConnection;
 use diesel::{connection, prelude::*};
@@ -131,8 +132,29 @@ impl Parser {
                             }
                             buf.clear();
                         }
-                        if is_redirect
-                            || page_title.is_empty()
+                        if is_redirect {
+                            //TODO: Create a seperate table in the db to store redirects so we can use them later on...
+                            //First we must grab the to redirect pages.
+                            let redirect_input = page_title.clone();
+                            let redirect_output = self.extract_links_from_text(page_txt);
+                            if redirect_output.len() > 1 {
+                                panic!(
+                                    "Redirect output length is greater than 1: {:?}",
+                                    redirect_output
+                                );
+                            }
+                            let redirect_entry = RedirectEntry {
+                                redirect_from: redirect_input,
+                                redirect_to: redirect_output[0].clone(),
+                            };
+                            match self.add_redirect_entry(&mut connection, &redirect_entry) {
+                                Ok(_) => (),
+                                Err(e) => panic!("Error adding to redirect table: {:?}", e),
+                            }
+                            exit(0)
+                        }
+
+                        if page_title.is_empty()
                             || page_txt.is_empty()
                             || page_title.contains("Template:")
                             || page_title.contains("Wikipedia:")
@@ -141,6 +163,7 @@ impl Parser {
                             || page_title.contains("User:")
                             || page_title.contains("Help:")
                             || page_title.contains("Draft:")
+                            || page_title.len() > 255
                             || page_title.contains("(disambiguation)")
                             || page_txt.contains("{{disambiguation}}")
                             || page_txt.contains("{{disambig")
@@ -148,20 +171,16 @@ impl Parser {
                             //skip redirect pages, empty pages, templates, wikipedia pages, files, user pages, help pages, disambiguation pages
                             continue;
                         }
-                        if page_title.len() > 255 {
-                            println!("Page title length exceeded for : {}", page_title);
-                            continue;
-                        }
+
                         let links = self.extract_links_from_text(page_txt);
                         let curr_length = self.compute_length(links.len());
                         prev_offset = self.compute_byte_offset(prev_offset, prev_length);
-                        // write to adjacency list + database
-                        match self.add_to_look_up_table(
-                            &page_title,
-                            &mut connection,
-                            prev_offset,
-                            curr_length,
-                        ) {
+                        let lookup_entry = LookupEntry {
+                            title: page_title.clone(),
+                            byteoffset: prev_offset.try_into().unwrap(), // in bytes
+                            length: curr_length.try_into().unwrap(),
+                        };
+                        match self.add_lookup_entry(&mut connection, &lookup_entry) {
                             Ok(_) => (),
                             Err(e) => panic!("Error adding to lookup table: {:?}", e),
                         }
@@ -219,7 +238,7 @@ impl Parser {
                     let mut split = line.split('|');
                     let t = split.next().unwrap();
                     let current_position = graph.stream_position().unwrap() - 16; //-16 bytes is only here because I failed to take into account the file header during pre-processing. ?reminder Will remove later on.
-                    let lookup_entry = self.look_up(t, &mut connection).unwrap();
+                    let lookup_entry = self.look_up_lookup_entry(t, &mut connection).unwrap();
                     if current_position != lookup_entry.byteoffset as u64 {
                         panic!(
                             "Byteoffset mismatch. Expected: {}, Got: {}",
@@ -232,9 +251,9 @@ impl Parser {
                     for link in links {
                         let link = link.to_string();
                         //Link does not work because of capitalization. Have to think of a way to fix this. Issue is some links are case sensitive, other links are not. Maybe the play is to just remove cases entirely? but idk
-                        //TODO: Fix link issue because of capitalization AND pluraization... 
-                        println!("Looking up: {}", link);
-                        let lookup_entry = self.look_up(&link, &mut connection).unwrap();
+                        //TODO: Fix link issue because of capitalization AND pluraization...
+                        let lookup_entry =
+                            self.look_up_lookup_entry(&link, &mut connection).unwrap();
                         graph
                             .write_i32::<LittleEndian>(lookup_entry.byteoffset)
                             .unwrap();
@@ -245,13 +264,7 @@ impl Parser {
         }
         bar.finish();
     }
-    fn write_node_header(graph: &mut File, num_links: i32) {
-        //3 integers are unused. The number of links is the 4th integer. first integer is used for traversal.
-        graph.write_i32::<LittleEndian>(0).unwrap();
-        graph.write_i32::<LittleEndian>(0).unwrap();
-        graph.write_i32::<LittleEndian>(0).unwrap();
-        graph.write_i32::<LittleEndian>(num_links).unwrap();
-    }
+
     fn extract_links_from_text(&self, text: String) -> Vec<String> {
         let mut links: Vec<String> = Vec::new();
         let mut current_link = String::new();
@@ -335,33 +348,38 @@ impl Parser {
 
         links
     }
-    fn add_to_look_up_table(
+
+    fn add_lookup_entry(
         &self,
-        title_entry: &str,
         connection: &mut PgConnection,
-        byteoffset_entry: usize,
-        bytelength: usize,
+        lookup_entry: &LookupEntry,
     ) -> Result<(), diesel::result::Error> {
-        let lookup_entry = LookupEntry {
-            title: title_entry.to_string(),
-            byteoffset: byteoffset_entry.try_into().unwrap(), // in bytes
-            length: bytelength.try_into().unwrap(),
-        };
-        match insert_into(schema::lookup::table)
-            .values(&lookup_entry)
+        match insert_into(lookup).values(lookup_entry).execute(connection) {
+            Ok(_) => Ok(()),
+            Err(e) => panic!(
+                "Error adding {} to lookup table: {:?}",
+                lookup_entry.title, e
+            ),
+        }
+    }
+
+    fn add_redirect_entry(
+        &self,
+        connection: &mut PgConnection,
+        redirect_entry: &RedirectEntry,
+    ) -> Result<(), diesel::result::Error> {
+        match insert_into(redirect)
+            .values(redirect_entry)
             .execute(connection)
         {
             Ok(_) => Ok(()),
-            Err(e) => panic!("Error adding {} to lookup table: {:?}", title_entry, e),
+            Err(e) => panic!(
+                "Error adding {} to redirect table: {:?}",
+                redirect_entry.redirect_from, e
+            ),
         }
     }
-    fn look_up(
-        &self,
-        matching_title: &str,
-        connection: &mut PgConnection,
-    ) -> Result<LookupEntry, diesel::result::Error> {
-        lookup.filter(title.ilike(matching_title)).first(connection)
-    }
+
     fn add_to_adj_list(
         &self,
         title_entry: &str,
@@ -381,9 +399,61 @@ impl Parser {
 
         Ok(())
     }
+
+    fn look_up_lookup_entry(
+        &self,
+        matching_title: &str,
+        connection: &mut PgConnection,
+    ) -> Result<LookupEntry, diesel::result::Error> {
+        lookup.filter(title.ilike(matching_title)).first(connection)
+    }
+
+    fn lookup_redirect_entry(
+        &self,
+        matching_title: &str,
+        connection: &mut PgConnection,
+    ) -> Result<Option<RedirectEntry>, diesel::result::Error> {
+        //returns an option because not finding a redirect entry is not an error.
+        lookup
+            .filter(title.ilike(matching_title))
+            .first(connection)
+            .optional()
+    }
+
+    fn lookup_with_redirects(
+        &self,
+        input_title: &str,
+        connection: &mut PgConnection,
+    ) -> Result<LookupEntry, diesel::result::Error> {
+        //abstracts the logic of checking if redirect exists when searching a link in the adjacency list in the lookup table
+        //we first check if it is a redirect, if it is, we lookup the corresponding title in the lookup table and return it.
+        let redirect_entry = self.lookup_redirect_entry(input_title, connection).unwrap();
+        match redirect_entry {
+            Some(redirect_entry) => {
+                let lookup_entry = self
+                    .look_up_lookup_entry(&redirect_entry.redirect_to, connection)
+                    .unwrap();
+                Ok(lookup_entry)
+            }
+            None => {
+                //no redirect exists, should just be a link
+                let lookup_entry = self.look_up_lookup_entry(input_title, connection).unwrap();
+                Ok(lookup_entry)
+            }
+        }
+    }
+    fn write_node_header(graph: &mut File, num_links: i32) {
+        //3 integers are unused. The number of links is the 4th integer. first integer is used for traversal.
+        graph.write_i32::<LittleEndian>(0).unwrap();
+        graph.write_i32::<LittleEndian>(0).unwrap();
+        graph.write_i32::<LittleEndian>(0).unwrap();
+        graph.write_i32::<LittleEndian>(num_links).unwrap();
+    }
+
     fn compute_byte_offset(&self, prev_offset: usize, prev_length: usize) -> usize {
         prev_offset + prev_length
     }
+
     fn compute_length(&self, num_links: usize) -> usize {
         NODE_HEADER_SIZE + num_links * LINK_SIZE
     }

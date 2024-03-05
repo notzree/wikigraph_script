@@ -15,8 +15,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new(File::open(FILE_PATH)?, BINARY_GRAPH_PATH.to_owned(), db_url);
     println!("Pre-processing");
     parser.pre_process_file().unwrap();
-    println!("Creating graph");
-    parser.create_graph();
-
+    // println!("Creating graph");
+    // parser.set_count(9086969);
+    // parser.create_graph();
     Ok(())
 }
