@@ -10,9 +10,9 @@ pub struct LookupEntry {
     pub length: i32,
 }
 
-// #[derive(Debug, Queryable, Serialize)] // Add this line to import the Serialize trait
-// pub struct Lookup {
-//     pub title: String,
-//     pub byteoffset: i32,
-//     pub length: i32,
-// }
+#[derive(Insertable, Queryable, Serialize, Debug)]
+#[table_name = "redirect"]
+pub struct RedirectEntry {
+    pub redirect_from: String,
+    pub redirect_to: String,
+}

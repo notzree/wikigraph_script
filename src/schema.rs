@@ -8,3 +8,17 @@ diesel::table! {
         length -> Int4,
     }
 }
+
+diesel::table! {
+    redirect (redirect_from) {
+        #[max_length = 255]
+        redirect_from -> Varchar,
+        #[max_length = 255]
+        redirect_to -> Varchar,
+    }
+}
+
+diesel::allow_tables_to_appear_in_same_query!(
+    lookup,
+    redirect,
+);
