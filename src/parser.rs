@@ -6,6 +6,7 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use core::panic;
 use diesel::insert_into;
 use diesel::pg::PgConnection;
+use diesel::result::{DatabaseErrorKind, Error::DatabaseError};
 use diesel::{connection, prelude::*};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use quick_xml::events::Event;
@@ -13,8 +14,6 @@ use quick_xml::reader::Reader;
 use std::fs::OpenOptions;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Error, Seek, SeekFrom, Write};
-use std::process::exit;
-use std::thread::current;
 use std::{cmp::min, fmt::Write as fmtWrite};
 
 //All sizes are in bytes. ie: 4 * 4 = 16 bytes = 4 integers.
@@ -132,28 +131,6 @@ impl Parser {
                             }
                             buf.clear();
                         }
-                        if is_redirect {
-                            //TODO: Create a seperate table in the db to store redirects so we can use them later on...
-                            //First we must grab the to redirect pages.
-                            let redirect_input = page_title.clone();
-                            let redirect_output = self.extract_links_from_text(page_txt);
-                            if redirect_output.len() > 1 {
-                                panic!(
-                                    "Redirect output length is greater than 1: {:?}",
-                                    redirect_output
-                                );
-                            }
-                            let redirect_entry = RedirectEntry {
-                                redirect_from: redirect_input,
-                                redirect_to: redirect_output[0].clone(),
-                            };
-                            match self.add_redirect_entry(&mut connection, &redirect_entry) {
-                                Ok(_) => (),
-                                Err(e) => panic!("Error adding to redirect table: {:?}", e),
-                            }
-                            exit(0)
-                        }
-
                         if page_title.is_empty()
                             || page_txt.is_empty()
                             || page_title.contains("Template:")
@@ -171,7 +148,22 @@ impl Parser {
                             //skip redirect pages, empty pages, templates, wikipedia pages, files, user pages, help pages, disambiguation pages
                             continue;
                         }
-
+                        if is_redirect {
+                            //TODO: Create a seperate table in the db to store redirects so we can use them later on...
+                            //First we must grab the to redirect pages.
+                            let redirect_output = self.extract_links_from_text(page_txt);
+                            if redirect_output.is_empty() {
+                                println!("{} skipped", page_title);
+                                continue;
+                            }
+                            let redirect_entry = RedirectEntry {
+                                redirect_from: page_title.clone(),
+                                redirect_to: redirect_output[0].clone(),
+                            };
+                            self.add_redirect_entry(&mut connection, &redirect_entry)
+                                .unwrap();
+                            continue;
+                        }
                         let links = self.extract_links_from_text(page_txt);
                         let curr_length = self.compute_length(links.len());
                         prev_offset = self.compute_byte_offset(prev_offset, prev_length);
@@ -230,7 +222,6 @@ impl Parser {
         //2 integers are unused.
         graph.write_i32::<LittleEndian>(0).unwrap();
         graph.write_i32::<LittleEndian>(0).unwrap();
-        println!("{:?}", graph.stream_position().unwrap());
         for line in BufReader::new(file).lines() {
             bar.inc(1);
             match line {
@@ -277,10 +268,10 @@ impl Parser {
                     //detect starting links
                     // Detect starting "[["
                     chars.next(); // Skip the next '[' as it's part of the marker
-                    if chars.peek() == Some(&':') {
-                        //skip wikipedia links
-                        continue;
-                    }
+                                  // if chars.peek() == Some(&':') { //I believe we already check for Wikipedia: in the pre-processing stage, so we can skip this check.
+                                  //     //skip wikipedia links
+                                  //     continue;
+                                  // }
                     inside_link = true;
                     current_link.clear();
                 }
@@ -291,6 +282,12 @@ impl Parser {
                     if inside_link {
                         if current_link.contains('|') {
                             let mut split = current_link.split('|');
+                            let link = split.next().unwrap();
+                            current_link = link.to_string();
+                        }
+                        if current_link.contains('#') {
+                            //Some redirets havee a #and a specific A-tag, we ignore them.
+                            let mut split = current_link.split('#');
                             let link = split.next().unwrap();
                             current_link = link.to_string();
                         }
@@ -330,7 +327,6 @@ impl Parser {
                 }
 
                 _ if inside_link => {
-                    //TODO: LOOK AT USS ASPRO SSN-648 The parser seems to be parsing content that is not part of the page.
                     current_link.push(c);
                     if current_link == "File:"
                         || current_link == "Wikipedia:"
@@ -373,10 +369,14 @@ impl Parser {
             .execute(connection)
         {
             Ok(_) => Ok(()),
-            Err(e) => panic!(
-                "Error adding {} to redirect table: {:?}",
-                redirect_entry.redirect_from, e
-            ),
+            Err(DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+                println!(
+                    "Duplicate key error when adding {} | {:?} to redirect table.",
+                    redirect_entry.redirect_from, redirect_entry.redirect_to
+                );
+                Ok(()) //keep going if we encounter a duplicate key error.
+            }
+            Err(e) => Err(e), // For other errors, we will propgate
         }
     }
 
@@ -405,7 +405,7 @@ impl Parser {
         matching_title: &str,
         connection: &mut PgConnection,
     ) -> Result<LookupEntry, diesel::result::Error> {
-        lookup.filter(title.ilike(matching_title)).first(connection)
+        lookup.filter(title.eq(matching_title)).first(connection)
     }
 
     fn lookup_redirect_entry(
@@ -414,8 +414,8 @@ impl Parser {
         connection: &mut PgConnection,
     ) -> Result<Option<RedirectEntry>, diesel::result::Error> {
         //returns an option because not finding a redirect entry is not an error.
-        lookup
-            .filter(title.ilike(matching_title))
+        redirect
+            .filter(redirect_from.eq(matching_title)) //todo: fix this shit by reverting it back to where clause, have to go around and make sure everything is .to_lowercase();
             .first(connection)
             .optional()
     }
