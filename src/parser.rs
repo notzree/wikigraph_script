@@ -4,16 +4,19 @@ use crate::schema::lookup::dsl::*;
 use crate::schema::redirect::dsl::*;
 use byteorder::{LittleEndian, WriteBytesExt};
 use core::panic;
-use diesel::insert_into;
+use diesel::dsl::ContainsJsonb;
 use diesel::pg::PgConnection;
+use diesel::prelude::*;
 use diesel::result::{DatabaseErrorKind, Error::DatabaseError};
-use diesel::{connection, prelude::*};
+use diesel::sql_types::Text;
+use diesel::{insert_into, sql_query};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use regex::Regex;
 use std::fs::OpenOptions;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Error, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Error, Seek, SeekFrom, Write};
 use std::{cmp::min, fmt::Write as fmtWrite};
 
 //All sizes are in bytes. ie: 4 * 4 = 16 bytes = 4 integers.
@@ -23,7 +26,7 @@ const LINK_SIZE: usize = 4;
 const LEFT_BRACE: char = '[';
 const RIGHT_BRACE: char = ']';
 const ADJACENCY_LIST_PATH: &str = "adjacency_list.txt";
-const NUM_ARTICLES: u64 = 6789472;
+const NUM_ARTICLES: u64 = 8660072;
 
 pub struct Parser {
     file_reader: quick_xml::Reader<std::io::BufReader<File>>,
@@ -157,8 +160,8 @@ impl Parser {
                                 continue;
                             }
                             let redirect_entry = RedirectEntry {
-                                redirect_from: page_title.clone(),
-                                redirect_to: redirect_output[0].clone(),
+                                redirect_from: page_title.to_lowercase(),
+                                redirect_to: redirect_output[0].to_lowercase(),
                             };
                             self.add_redirect_entry(&mut connection, &redirect_entry)
                                 .unwrap();
@@ -168,7 +171,7 @@ impl Parser {
                         let curr_length = self.compute_length(links.len());
                         prev_offset = self.compute_byte_offset(prev_offset, prev_length);
                         let lookup_entry = LookupEntry {
-                            title: page_title.clone(),
+                            title: page_title.to_lowercase(),
                             byteoffset: prev_offset.try_into().unwrap(), // in bytes
                             length: curr_length.try_into().unwrap(),
                         };
@@ -196,17 +199,17 @@ impl Parser {
     //Second pass to take adjacency list + lookup table -> graph in binary format.
     pub fn create_graph(&self) {
         const FILE_VERSION: i32 = 1;
-        let bar = ProgressBar::new(NUM_ARTICLES);
-        bar.set_style(
-            ProgressStyle::with_template(
-                "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
-            )
-            .unwrap()
-            .with_key("eta", |state: &ProgressState, w: &mut dyn fmtWrite| {
-                write!(w, "{:.1}hrs", state.eta().as_secs_f64() / 3600.0).unwrap()
-            })
-            .progress_chars("#>-"),
-        );
+        // let bar = ProgressBar::new(NUM_ARTICLES);
+        // bar.set_style(
+        //     ProgressStyle::with_template(
+        //         "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
+        //     )
+        //     .unwrap()
+        //     .with_key("eta", |state: &ProgressState, w: &mut dyn fmtWrite| {
+        //         write!(w, "{:.1}hrs", state.eta().as_secs_f64() / 3600.0).unwrap()
+        //     })
+        //     .progress_chars("#>-"),
+        // );
         let mut connection = PgConnection::establish(&self.connection_string)
             .unwrap_or_else(|_| panic!("Error connecting to {}", self.connection_string));
         let file = File::open(ADJACENCY_LIST_PATH).unwrap();
@@ -215,21 +218,25 @@ impl Parser {
             .create(true)
             .open(&self.output_file_path)
             .unwrap();
+        let mut graph_buf_writer = BufWriter::new(graph);
 
         //writing file header
-        graph.write_i32::<LittleEndian>(FILE_VERSION).unwrap();
-        graph.write_i32::<LittleEndian>(self.count).unwrap();
+        graph_buf_writer
+            .write_i32::<LittleEndian>(FILE_VERSION)
+            .unwrap();
+        graph_buf_writer
+            .write_i32::<LittleEndian>(self.count)
+            .unwrap();
         //2 integers are unused.
-        graph.write_i32::<LittleEndian>(0).unwrap();
-        graph.write_i32::<LittleEndian>(0).unwrap();
+        graph_buf_writer.write_i32::<LittleEndian>(0).unwrap();
+        graph_buf_writer.write_i32::<LittleEndian>(0).unwrap();
         for line in BufReader::new(file).lines() {
-            bar.inc(1);
             match line {
                 Ok(line) => {
                     let mut split = line.split('|');
                     let t = split.next().unwrap();
-                    let current_position = graph.stream_position().unwrap() - 16; //-16 bytes is only here because I failed to take into account the file header during pre-processing. ?reminder Will remove later on.
-                    let lookup_entry = self.look_up_lookup_entry(t, &mut connection).unwrap();
+                    let current_position = graph_buf_writer.stream_position().unwrap();
+                    let lookup_entry = self.lookup_with_redirects(t, &mut connection).unwrap();
                     if current_position != lookup_entry.byteoffset as u64 {
                         panic!(
                             "Byteoffset mismatch. Expected: {}, Got: {}",
@@ -238,24 +245,62 @@ impl Parser {
                     }
                     let links = split.next().unwrap().split(',');
                     let num_links = links.clone().count() as i32;
-                    Self::write_node_header(&mut graph, num_links);
+                    Self::write_node_header(&mut graph_buf_writer, num_links);
                     for link in links {
                         let link = link.to_string();
                         //Link does not work because of capitalization. Have to think of a way to fix this. Issue is some links are case sensitive, other links are not. Maybe the play is to just remove cases entirely? but idk
-                        //TODO: Fix link issue because of capitalization AND pluraization...
                         let lookup_entry =
-                            self.look_up_lookup_entry(&link, &mut connection).unwrap();
-                        graph
+                            self.lookup_with_redirects(&link, &mut connection).unwrap();
+                        graph_buf_writer
                             .write_i32::<LittleEndian>(lookup_entry.byteoffset)
                             .unwrap();
                     }
+                    println!("{} done", t);
+                    graph_buf_writer.flush().unwrap();
                 }
                 Err(e) => panic!("Error reading line: {:?}", e),
             }
+            // bar.inc(1);
         }
-        bar.finish();
+        // bar.finish();
+    }
+    fn regex_links(&self, text: String) -> Vec<String> {
+        let link_regex =
+            Regex::new(r"\[\[([^|\n\]]+)(?:\|[^\n\]]+)?\]\]|(&lt;!--)|(--&gt;)").unwrap();
+        let mut links: Vec<String> = Vec::new();
+        for cap in link_regex.captures_iter(&text) {
+            let mut current_link = self.clean_input(&cap[0]);
+            if current_link.contains("File:")
+                || current_link.contains("Wikipedia:")
+                || current_link.contains("WP:")
+                || current_link.contains("User:")
+            {
+                // we realize that we are in either a file, template, or wikipedia article namespace. We reseet
+                continue;
+            }
+            if current_link.contains('|') {
+                let mut split = current_link.split('|');
+                let link = split.next().unwrap();
+                current_link = link.to_string();
+            }
+            links.push(current_link);
+        }
+        links
     }
 
+    fn clean_input(&self, input: &str) -> String {
+        let chars: Vec<char> = input.chars().collect();
+        let len = chars.len();
+        // Ensure the string is long enough to remove 2 characters from both ends
+        if len > 4 {
+            let output: String = chars[2..len - 2].iter().collect();
+            let mut split = output.split('#');
+            split.next().unwrap().to_string()
+        } else {
+            // Return an empty string or handle this case as you see fit
+            String::new()
+        }
+    }
     fn extract_links_from_text(&self, text: String) -> Vec<String> {
         let mut links: Vec<String> = Vec::new();
         let mut current_link = String::new();
@@ -265,13 +310,8 @@ impl Parser {
         while let Some(c) = chars.next() {
             match c {
                 '[' if chars.peek() == Some(&'[') => {
-                    //detect starting links
                     // Detect starting "[["
-                    chars.next(); // Skip the next '[' as it's part of the marker
-                                  // if chars.peek() == Some(&':') { //I believe we already check for Wikipedia: in the pre-processing stage, so we can skip this check.
-                                  //     //skip wikipedia links
-                                  //     continue;
-                                  // }
+                    chars.next(); // Skip the next '['
                     inside_link = true;
                     current_link.clear();
                 }
@@ -291,7 +331,7 @@ impl Parser {
                             let link = split.next().unwrap();
                             current_link = link.to_string();
                         }
-                        links.push(current_link.clone());
+                        links.push(current_link.to_lowercase());
                         inside_link = false;
                     }
                 }
@@ -352,10 +392,14 @@ impl Parser {
     ) -> Result<(), diesel::result::Error> {
         match insert_into(lookup).values(lookup_entry).execute(connection) {
             Ok(_) => Ok(()),
-            Err(e) => panic!(
-                "Error adding {} to lookup table: {:?}",
-                lookup_entry.title, e
-            ),
+            Err(DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+                println!(
+                    "Duplicate key error when adding {} to lookup table.",
+                    lookup_entry.title
+                );
+                Ok(()) //keep going if we encounter a duplicate key error.
+            }
+            Err(e) => Err(e), //propogate any other errors
         }
     }
 
@@ -386,9 +430,9 @@ impl Parser {
         links: Vec<String>,
         file: &mut File,
     ) -> Result<(), std::io::Error> {
-        let mut line = title_entry.to_string() + "|";
+        let mut line = title_entry.to_lowercase() + "|";
         for link in links.iter() {
-            line.push_str(link);
+            line.push_str(&link.to_lowercase());
             line.push(',');
         }
         line.push('\n');
@@ -405,7 +449,9 @@ impl Parser {
         matching_title: &str,
         connection: &mut PgConnection,
     ) -> Result<LookupEntry, diesel::result::Error> {
-        lookup.filter(title.eq(matching_title)).first(connection)
+        sql_query("SELECT * from lookup where LOWER(title) = LOWER($1);")
+            .bind::<Text, _>(matching_title)
+            .get_result(connection)
     }
 
     fn lookup_redirect_entry(
@@ -414,9 +460,9 @@ impl Parser {
         connection: &mut PgConnection,
     ) -> Result<Option<RedirectEntry>, diesel::result::Error> {
         //returns an option because not finding a redirect entry is not an error.
-        redirect
-            .filter(redirect_from.eq(matching_title)) //todo: fix this shit by reverting it back to where clause, have to go around and make sure everything is .to_lowercase();
-            .first(connection)
+        sql_query("SELECT * from redirect where LOWER(redirect_from) = LOWER($1);")
+            .bind::<Text, _>(matching_title)
+            .get_result(connection)
             .optional()
     }
 
@@ -425,24 +471,28 @@ impl Parser {
         input_title: &str,
         connection: &mut PgConnection,
     ) -> Result<LookupEntry, diesel::result::Error> {
-        //abstracts the logic of checking if redirect exists when searching a link in the adjacency list in the lookup table
-        //we first check if it is a redirect, if it is, we lookup the corresponding title in the lookup table and return it.
-        let redirect_entry = self.lookup_redirect_entry(input_title, connection).unwrap();
-        match redirect_entry {
-            Some(redirect_entry) => {
-                let lookup_entry = self
-                    .look_up_lookup_entry(&redirect_entry.redirect_to, connection)
-                    .unwrap();
-                Ok(lookup_entry)
+        let result = lookup
+            .inner_join(redirect.on(title.eq(redirect_to)))
+            .filter(redirect_from.eq(input_title))
+            .select(lookup::all_columns())
+            .first::<LookupEntry>(connection)
+            .optional()?;
+
+        match result {
+            Some(entry) => {
+                println!(" {:?}", entry);
+                Ok(entry)
             }
             None => {
-                //no redirect exists, should just be a link
-                let lookup_entry = self.look_up_lookup_entry(input_title, connection).unwrap();
-                Ok(lookup_entry)
+                println!("No redirect entry found for {}", input_title);
+                // Fallback to directly querying the lookups table if no entry was found through redirects
+                lookup
+                    .filter(title.eq(input_title))
+                    .first::<LookupEntry>(connection)
             }
         }
     }
-    fn write_node_header(graph: &mut File, num_links: i32) {
+    fn write_node_header(graph: &mut BufWriter<File>, num_links: i32) {
         //3 integers are unused. The number of links is the 4th integer. first integer is used for traversal.
         graph.write_i32::<LittleEndian>(0).unwrap();
         graph.write_i32::<LittleEndian>(0).unwrap();

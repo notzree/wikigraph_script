@@ -1,19 +1,18 @@
 use crate::schema::*;
 use diesel::prelude::*;
-use serde::Serialize;
+use diesel::query_dsl::QueryDsl;
+use serde::{Deserialize, Serialize};
 
-#[derive(Insertable, Queryable, Serialize, Debug)]
+#[derive(Insertable, Queryable, Serialize, Selectable, QueryableByName, Debug)]
 #[table_name = "lookup"]
-#[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct LookupEntry {
     pub title: String,
     pub byteoffset: i32,
     pub length: i32,
 }
 
-#[derive(Insertable, Queryable, Serialize, Debug)]
+#[derive(Insertable, Queryable, QueryableByName, Selectable, Serialize, Debug)]
 #[table_name = "redirect"]
-#[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct RedirectEntry {
     pub redirect_from: String,
     pub redirect_to: String,
