@@ -1,6 +1,6 @@
 FROM rust:1.75.0
 
-WORKDIR /wikigraph
+WORKDIR /wikigraph_script
 
 RUN cargo install diesel_cli --no-default-features --features postgres
 
