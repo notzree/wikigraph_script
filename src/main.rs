@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // parser.lookup_with_redirects("", &mut connection);
 
     let start = Instant::now();
-    parser.create_graph();
+    parser.pre_process_file().unwrap();
     let duration = start.elapsed();
     println!("Graph creation time: {:?}", duration);
 
