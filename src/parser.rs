@@ -156,7 +156,7 @@ impl Parser {
                             if links.is_empty() {
                                 continue;
                             }
-                            let mut redirect_output = self.sanitize_str(&links[0]);
+                            let redirect_output = self.sanitize_str(&links[0]);
                             let redirect_entry = RedirectEntry {
                                 redirect_from: sanitized_page_title,
                                 redirect_to: redirect_output,
@@ -245,7 +245,7 @@ impl Parser {
                     let num_links = links.clone().count() as i32;
                     Self::write_node_header(&mut graph_buf_writer, num_links);
                     for link in links {
-                        let link = link.trim();
+                        let link = link.to_string();
                         //Link does not work because of capitalization. Have to think of a way to fix this. Issue is some links are case sensitive, other links are not. Maybe the play is to just remove cases entirely? but idk
                         let lookup_entry =
                             self.lookup_with_redirects(&link, &mut connection).unwrap();
@@ -281,7 +281,7 @@ impl Parser {
                     //end links
                     // Detect ending "]]"
                     chars.next(); // Skip the next ']' as it's part of the marker
-                    if inside_link {
+                    if inside_link && !current_link.is_empty() {
                         if current_link.contains('|') {
                             let mut split = current_link.split('|');
                             let link = split.next().unwrap();
@@ -300,13 +300,23 @@ impl Parser {
                 '<' => {
                     //we encounter a tag, based on the markup, we can skip the content of the tag...
                     let mut multipeek = MultiPeek::new(chars.clone(), 15);
-                    // print!("multipeek value {:?}", multipeek.peek_until(20));
-                    if multipeek.peek_until(15).contains("syntaxhighlight") {
+                    if multipeek.peek_until(15) == "syntaxhighlight" {
                         loop {
                             if multipeek.is_empty() {
                                 break;
                             }
                             if multipeek.peek_until(15).contains("</syntaxhighlight>") {
+                                break;
+                            }
+                            multipeek.next();
+                        }
+                    }
+                    if multipeek.peek_until(3) == "ref" {
+                        loop {
+                            if multipeek.is_empty() {
+                                break;
+                            }
+                            if multipeek.peek_until(3).contains("</ref>") {
                                 break;
                             }
                             multipeek.next();
