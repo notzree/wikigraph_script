@@ -4,7 +4,6 @@ use crate::schema::lookup::dsl::*;
 use crate::schema::redirect::dsl::*;
 use byteorder::{LittleEndian, WriteBytesExt};
 use core::panic;
-use diesel::dsl::ContainsJsonb;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::{DatabaseErrorKind, Error::DatabaseError};
@@ -13,7 +12,6 @@ use diesel::{insert_into, sql_query};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
-use regex::Regex;
 use std::fs::OpenOptions;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Error, Seek, SeekFrom, Write};
@@ -26,7 +24,8 @@ const LINK_SIZE: usize = 4;
 const LEFT_BRACE: char = '[';
 const RIGHT_BRACE: char = ']';
 const ADJACENCY_LIST_PATH: &str = "adjacency_list.txt";
-const NUM_ARTICLES: u64 = 8660072;
+const NUM_ARTICLES: u64 = 9036686;
+const NUM_REDIRECTS: u64 = 10099039;
 
 pub struct Parser {
     file_reader: quick_xml::Reader<std::io::BufReader<File>>,
@@ -147,21 +146,20 @@ impl Parser {
                             || page_title.contains("(disambiguation)")
                             || page_txt.contains("{{disambiguation}}")
                             || page_txt.contains("{{disambig")
+                            || page_title.contains("MOS:")
                         {
-                            //skip redirect pages, empty pages, templates, wikipedia pages, files, user pages, help pages, disambiguation pages
                             continue;
                         }
+                        let sanitized_page_title = self.sanitize_str(&page_title);
                         if is_redirect {
-                            //TODO: Create a seperate table in the db to store redirects so we can use them later on...
-                            //First we must grab the to redirect pages.
-                            let redirect_output = self.extract_links_from_text(page_txt);
-                            if redirect_output.is_empty() {
-                                println!("{} skipped", page_title);
+                            let links = self.extract_links_from_text(page_txt);
+                            if links.is_empty() {
                                 continue;
                             }
+                            let mut redirect_output = self.sanitize_str(&links[0]);
                             let redirect_entry = RedirectEntry {
-                                redirect_from: page_title.to_lowercase(),
-                                redirect_to: redirect_output[0].to_lowercase(),
+                                redirect_from: sanitized_page_title,
+                                redirect_to: redirect_output,
                             };
                             self.add_redirect_entry(&mut connection, &redirect_entry)
                                 .unwrap();
@@ -171,7 +169,7 @@ impl Parser {
                         let curr_length = self.compute_length(links.len());
                         prev_offset = self.compute_byte_offset(prev_offset, prev_length);
                         let lookup_entry = LookupEntry {
-                            title: page_title.to_lowercase(),
+                            title: sanitized_page_title,
                             byteoffset: prev_offset.try_into().unwrap(), // in bytes
                             length: curr_length.try_into().unwrap(),
                         };
@@ -199,21 +197,21 @@ impl Parser {
     //Second pass to take adjacency list + lookup table -> graph in binary format.
     pub fn create_graph(&self) {
         const FILE_VERSION: i32 = 1;
-        // let bar = ProgressBar::new(NUM_ARTICLES);
-        // bar.set_style(
-        //     ProgressStyle::with_template(
-        //         "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
-        //     )
-        //     .unwrap()
-        //     .with_key("eta", |state: &ProgressState, w: &mut dyn fmtWrite| {
-        //         write!(w, "{:.1}hrs", state.eta().as_secs_f64() / 3600.0).unwrap()
-        //     })
-        //     .progress_chars("#>-"),
-        // );
+        let bar = ProgressBar::new(NUM_ARTICLES);
+        bar.set_style(
+            ProgressStyle::with_template(
+                "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
+            )
+            .unwrap()
+            .with_key("eta", |state: &ProgressState, w: &mut dyn fmtWrite| {
+                write!(w, "{:.1}hrs", state.eta().as_secs_f64() / 3600.0).unwrap()
+            })
+            .progress_chars("#>-"),
+        );
         let mut connection = PgConnection::establish(&self.connection_string)
             .unwrap_or_else(|_| panic!("Error connecting to {}", self.connection_string));
         let file = File::open(ADJACENCY_LIST_PATH).unwrap();
-        let mut graph = OpenOptions::new()
+        let graph = OpenOptions::new()
             .write(true)
             .create(true)
             .open(&self.output_file_path)
@@ -247,7 +245,7 @@ impl Parser {
                     let num_links = links.clone().count() as i32;
                     Self::write_node_header(&mut graph_buf_writer, num_links);
                     for link in links {
-                        let link = link.to_string();
+                        let link = link.trim();
                         //Link does not work because of capitalization. Have to think of a way to fix this. Issue is some links are case sensitive, other links are not. Maybe the play is to just remove cases entirely? but idk
                         let lookup_entry =
                             self.lookup_with_redirects(&link, &mut connection).unwrap();
@@ -260,47 +258,11 @@ impl Parser {
                 }
                 Err(e) => panic!("Error reading line: {:?}", e),
             }
-            // bar.inc(1);
+            bar.inc(1);
         }
-        // bar.finish();
-    }
-    fn regex_links(&self, text: String) -> Vec<String> {
-        let link_regex =
-            Regex::new(r"\[\[([^|\n\]]+)(?:\|[^\n\]]+)?\]\]|(&lt;!--)|(--&gt;)").unwrap();
-        let mut links: Vec<String> = Vec::new();
-        for cap in link_regex.captures_iter(&text) {
-            let mut current_link = self.clean_input(&cap[0]);
-            if current_link.contains("File:")
-                || current_link.contains("Wikipedia:")
-                || current_link.contains("WP:")
-                || current_link.contains("User:")
-            {
-                // we realize that we are in either a file, template, or wikipedia article namespace. We reseet
-                continue;
-            }
-            if current_link.contains('|') {
-                let mut split = current_link.split('|');
-                let link = split.next().unwrap();
-                current_link = link.to_string();
-            }
-            links.push(current_link);
-        }
-        links
+        bar.finish();
     }
 
-    fn clean_input(&self, input: &str) -> String {
-        let chars: Vec<char> = input.chars().collect();
-        let len = chars.len();
-        // Ensure the string is long enough to remove 2 characters from both ends
-        if len > 4 {
-            let output: String = chars[2..len - 2].iter().collect();
-            let mut split = output.split('#');
-            split.next().unwrap().to_string()
-        } else {
-            // Return an empty string or handle this case as you see fit
-            String::new()
-        }
-    }
     fn extract_links_from_text(&self, text: String) -> Vec<String> {
         let mut links: Vec<String> = Vec::new();
         let mut current_link = String::new();
@@ -331,7 +293,7 @@ impl Parser {
                             let link = split.next().unwrap();
                             current_link = link.to_string();
                         }
-                        links.push(current_link.to_lowercase());
+                        links.push(self.sanitize_str(&current_link));
                         inside_link = false;
                     }
                 }
@@ -385,6 +347,24 @@ impl Parser {
         links
     }
 
+    fn sanitize_str(&self, input: &str) -> String {
+        // Trim leading and trailing whitespace
+        let trimmed = input.trim();
+
+        // Replace all underscores with spaces
+        let underscores_to_spaces = trimmed.replace('_', " ");
+
+        // Convert to lowercase
+        let lowercase = underscores_to_spaces.to_lowercase();
+
+        // Remove colon if the first character that is not a whitespace is a colon
+
+        if lowercase.starts_with(':') {
+            lowercase.strip_prefix(':').unwrap().to_string()
+        } else {
+            lowercase
+        }
+    }
     fn add_lookup_entry(
         &self,
         connection: &mut PgConnection,
@@ -393,10 +373,6 @@ impl Parser {
         match insert_into(lookup).values(lookup_entry).execute(connection) {
             Ok(_) => Ok(()),
             Err(DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
-                println!(
-                    "Duplicate key error when adding {} to lookup table.",
-                    lookup_entry.title
-                );
                 Ok(()) //keep going if we encounter a duplicate key error.
             }
             Err(e) => Err(e), //propogate any other errors
@@ -414,10 +390,6 @@ impl Parser {
         {
             Ok(_) => Ok(()),
             Err(DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
-                println!(
-                    "Duplicate key error when adding {} | {:?} to redirect table.",
-                    redirect_entry.redirect_from, redirect_entry.redirect_to
-                );
                 Ok(()) //keep going if we encounter a duplicate key error.
             }
             Err(e) => Err(e), // For other errors, we will propgate
@@ -430,9 +402,9 @@ impl Parser {
         links: Vec<String>,
         file: &mut File,
     ) -> Result<(), std::io::Error> {
-        let mut line = title_entry.to_lowercase() + "|";
+        let mut line = self.sanitize_str(title_entry) + "|";
         for link in links.iter() {
-            line.push_str(&link.to_lowercase());
+            line.push_str(link);
             line.push(',');
         }
         line.push('\n');
@@ -466,14 +438,21 @@ impl Parser {
             .optional()
     }
 
-    fn lookup_with_redirects(
+    pub fn lookup_with_redirects(
         &self,
         input_title: &str,
         connection: &mut PgConnection,
     ) -> Result<LookupEntry, diesel::result::Error> {
-        let result = lookup
-            .inner_join(redirect.on(title.eq(redirect_to)))
+        // let result = lookup
+        //     .inner_join(redirect.on(title.eq(redirect_to)))
+        //     .filter(redirect_from.eq(input_title))
+        //     .select(lookup::all_columns())
+        //     .first::<LookupEntry>(connection)
+        //     .optional()?;
+
+        let result = redirect
             .filter(redirect_from.eq(input_title))
+            .inner_join(lookup.on(redirect_to.eq(title)))
             .select(lookup::all_columns())
             .first::<LookupEntry>(connection)
             .optional()?;
