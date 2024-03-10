@@ -9,6 +9,6 @@ The script runs in 2 sections. The first section, it uses [quick_xml](https://do
 All runs were performed in a docker environment using 8gbs of ram and 6 M2 CPU cores. 
 Speed results for pre-processing section:
 - 12 hours using regex to extract links
-- 7 hours using custom parsing function
+- 5.85 hours using custom parsing function
 Speed results for graph-building section:
 - //todo: Run this
