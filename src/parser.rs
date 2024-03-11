@@ -18,8 +18,7 @@ const NODE_HEADER_SIZE: usize = 4 * 4;
 const LINK_SIZE: usize = 4;
 
 const ADJACENCY_LIST_PATH: &str = "adjacency_list.txt";
-const NUM_ARTICLES: u64 = 9036686;
-const NUM_REDIRECTS: u64 = 10099039;
+const NUM_ARTICLES: u64 = 9030425;
 
 pub struct Parser {
     file_reader: quick_xml::Reader<std::io::BufReader<File>>,
@@ -210,6 +209,7 @@ impl Parser {
         );
 
         self.graph_builder.write_file_header();
+
         for line in self.adj_list_handler.iter() {
             match line {
                 Ok(line) => {

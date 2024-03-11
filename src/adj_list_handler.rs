@@ -1,6 +1,6 @@
 use crate::utils::sanitize_string;
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
 };
 pub trait AdjacencyListHandler {
@@ -17,7 +17,13 @@ pub struct WikigraphAdjacencyListHandler {
 
 impl WikigraphAdjacencyListHandler {
     pub fn new(file_path: &str) -> Self {
-        let adj_list = File::create(file_path).unwrap();
+        let adj_list = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true) // This will create the file if it doesn't exist.
+            .append(true) // This ensures that data is appended to the file.
+            .open(file_path)
+            .unwrap();
         WikigraphAdjacencyListHandler { adj_list }
     }
 }
