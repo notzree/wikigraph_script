@@ -21,7 +21,6 @@ impl WikigraphAdjacencyListHandler {
             .read(true)
             .write(true)
             .create(true) // This will create the file if it doesn't exist.
-            .append(true) // This ensures that data is appended to the file.
             .open(file_path)
             .unwrap();
         WikigraphAdjacencyListHandler { adj_list }
@@ -36,7 +35,7 @@ impl AdjacencyListHandler for WikigraphAdjacencyListHandler {
         let mut line = sanitize_string(title) + "|";
         for link in links.iter() {
             line.push_str(link);
-            line.push(',');
+            line.push('_');
         }
         line.push('\n');
         let _ = match self.adj_list.write_all(line.as_bytes()) {
