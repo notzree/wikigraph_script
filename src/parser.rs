@@ -143,6 +143,7 @@ impl Parser {
                             || page_title.contains("Help:")
                             || page_title.contains("Draft:")
                             || page_title.len() > 255
+                            || page_title.len() == 1 //Skipping single characters as these are commonly complex symbols that mess up the adjacency list
                             || page_title.contains("(disambiguation)")
                             || page_txt.contains("{{disambiguation}}")
                             || page_txt.contains("{{disambig")
@@ -152,18 +153,18 @@ impl Parser {
                         }
                         let sanitized_page_title = sanitize_string(&page_title);
                         if is_redirect {
-                            let links = self.link_handler.extract_links(page_txt);
-                            if links.is_empty() {
-                                continue;
-                            }
-                            let sanitized_redirect_output = sanitize_string(&links[0]);
-                            let redirect_entry = RedirectEntry {
-                                redirect_from: sanitized_page_title,
-                                redirect_to: sanitized_redirect_output,
-                            };
-                            self.database_handler
-                                .add_redirect_entry(&redirect_entry)
-                                .unwrap();
+                            // let links = self.link_handler.extract_links(page_txt);
+                            // if links.is_empty() {
+                            //     continue;
+                            // }
+                            // let sanitized_redirect_output = sanitize_string(&links[0]);
+                            // let redirect_entry = RedirectEntry {
+                            //     redirect_from: sanitized_page_title,
+                            //     redirect_to: sanitized_redirect_output,
+                            // };
+                            // self.database_handler
+                            //     .add_redirect_entry(&redirect_entry)
+                            //     .unwrap();
                             continue;
                         }
                         let links = self.link_handler.extract_links(page_txt);
@@ -174,9 +175,9 @@ impl Parser {
                             byteoffset: prev_offset.try_into().unwrap(), // in bytes
                             length: curr_length.try_into().unwrap(),
                         };
-                        self.database_handler
-                            .add_lookup_entry(&lookup_entry)
-                            .unwrap();
+                        // self.database_handler
+                        //     .add_lookup_entry(&lookup_entry)
+                        //     .unwrap();
                         self.adj_list_handler
                             .add_to_adj_list(&page_title, links)
                             .unwrap();
@@ -217,20 +218,27 @@ impl Parser {
                     let t = split.next().unwrap();
                     let current_position = self.graph_builder.get_current_position();
                     let lookup_entry = self.database_handler.lookup_with_redirects(t).unwrap();
-                    if current_position != lookup_entry.byteoffset as u64 {
+                    let expected_offset = (lookup_entry.byteoffset) as u64;
+                    println!("{} {}", current_position, expected_offset);
+                    if current_position != expected_offset {
                         panic!(
                             "Byteoffset mismatch. Expected: {}, Got: {}",
                             lookup_entry.byteoffset, current_position
                         );
                     }
-                    let links = split.next().unwrap().split(',');
+                    let links = split.next().unwrap().split('_');
                     let num_links = links.clone().count() as i32;
                     self.graph_builder.write_node_header(num_links);
                     for link in links {
-                        let link = link.to_string();
-                        //Link does not work because of capitalization. Have to think of a way to fix this. Issue is some links are case sensitive, other links are not. Maybe the play is to just remove cases entirely? but idk
-                        let lookup_entry =
-                            self.database_handler.lookup_with_redirects(&link).unwrap();
+                        if link.is_empty() {
+                            continue;
+                        }
+                        let lookup_entry = self.database_handler.lookup_with_redirects(link);
+                        if lookup_entry.is_err() {
+                            panic!("Error looking up {}", link);
+                            // continue;
+                        }
+                        let lookup_entry = lookup_entry.unwrap();
                         self.graph_builder.write_value(lookup_entry.byteoffset);
                     }
                     // println!("{} done", t);

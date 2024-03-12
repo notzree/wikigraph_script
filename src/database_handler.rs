@@ -1,10 +1,11 @@
 use crate::models::{LookupEntry, RedirectEntry};
 use crate::schema::lookup::dsl::*;
 use crate::schema::redirect::dsl::*;
-use diesel::insert_into;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::{DatabaseErrorKind, Error::DatabaseError};
+use diesel::sql_types::Text;
+use diesel::{insert_into, sql_query};
 
 pub trait DatabaseHandler {
     fn lookup_with_redirects(
@@ -36,7 +37,7 @@ impl DatabaseHandler for PostgresDatabaseHandler {
         input_title: &str,
     ) -> Result<LookupEntry, diesel::result::Error> {
         let result = redirect
-            .filter(redirect_from.eq(input_title))
+            .filter(redirect_from.eq(&input_title))
             .inner_join(lookup.on(redirect_to.eq(title)))
             .select(lookup::all_columns())
             .first::<LookupEntry>(&mut self.connection)
@@ -44,18 +45,20 @@ impl DatabaseHandler for PostgresDatabaseHandler {
 
         match result {
             Some(entry) => {
-                println!(" {:?}", entry);
+                // println!(" {:?}", entry);
                 Ok(entry)
             }
             None => {
-                println!("No redirect entry found for {}", input_title);
+                // println!("No redirect entry found for {}", &input_title);
                 // Fallback to directly querying the lookups table if no entry was found through redirects
                 lookup
                     .filter(title.eq(input_title))
                     .first::<LookupEntry>(&mut self.connection)
+                // self.look_up_lookup_entry(&input_title)
             }
         }
     }
+
     fn add_lookup_entry(
         &mut self,
         lookup_entry: &LookupEntry,

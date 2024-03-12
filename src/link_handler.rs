@@ -1,3 +1,5 @@
+use std::thread::current;
+
 //move link extraction here
 use crate::utils::sanitize_string;
 pub trait LinkHandler {
@@ -35,6 +37,11 @@ impl LinkHandler for WikiLinkHandler {
                             let mut split = current_link.split('#');
                             let link = split.next().unwrap();
                             current_link = link.to_string();
+                        }
+                        if current_link.contains("(disambiguation)") {
+                            inside_link = false;
+                            current_link.clear();
+                            continue;
                         }
                         links.push(sanitize_string(&current_link));
                         inside_link = false;
@@ -84,6 +91,10 @@ impl LinkHandler for WikiLinkHandler {
                     if current_link == "File:"
                         || current_link == "Wikipedia:"
                         || current_link == "WP:"
+                        || current_link == "Template:"
+                        || current_link == "MOS:"
+                        || current_link == "Help:"
+                        || current_link == "Draft:"
                         || current_link == "User:"
                     {
                         // we realize that we are in either a file, template, or wikipedia article namespace. We reseet
