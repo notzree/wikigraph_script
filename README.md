@@ -12,3 +12,6 @@ Speed results for pre-processing section:
 - 5.85 hours using custom parsing function
 Speed results for graph-building section:
 - //todo: Run this
+
+## Improvements:
+Store the titles as their byteoffsets instead of requiring another db lookup.
