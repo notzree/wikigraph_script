@@ -56,6 +56,7 @@ impl GraphBuilder for WikiBinaryGraphBuilder {
             .unwrap();
     }
     fn get_current_position(&mut self) -> u64 {
+        self.graph_buf_writer.flush().unwrap();
         self.graph_buf_writer.stream_position().unwrap()
     }
     fn write_value(&mut self, value: i32) {
