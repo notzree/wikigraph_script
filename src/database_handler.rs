@@ -18,6 +18,10 @@ pub trait DatabaseHandler {
         &mut self,
         redirect_entry: &RedirectEntry,
     ) -> Result<(), diesel::result::Error>;
+    fn look_up_lookup_entry(
+        &mut self,
+        input_title: &str,
+    ) -> Result<LookupEntry, diesel::result::Error>;
 }
 
 pub struct PostgresDatabaseHandler {
@@ -58,21 +62,23 @@ impl DatabaseHandler for PostgresDatabaseHandler {
             }
         }
     }
+    fn look_up_lookup_entry(
+        &mut self,
+        input_title: &str,
+    ) -> Result<LookupEntry, diesel::result::Error> {
+        lookup
+            .filter(title.eq(input_title))
+            .first::<LookupEntry>(&mut self.connection)
+    }
 
     fn add_lookup_entry(
         &mut self,
         lookup_entry: &LookupEntry,
     ) -> Result<(), diesel::result::Error> {
-        match insert_into(lookup)
+        insert_into(lookup)
             .values(lookup_entry)
             .execute(&mut self.connection)
-        {
-            Ok(_) => Ok(()),
-            Err(DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
-                Ok(()) //keep going if we encounter a duplicate key error.
-            }
-            Err(e) => Err(e), //propogate any other errors
-        }
+            .map(|_| ())
     }
     fn add_redirect_entry(
         &mut self,
