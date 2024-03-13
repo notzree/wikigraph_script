@@ -38,13 +38,14 @@ impl LinkHandler for WikiLinkHandler {
                             let link = split.next().unwrap();
                             current_link = link.to_string();
                         }
-                        if current_link.contains("(disambiguation)") {
+                        if current_link.contains("(disambiguation)") || current_link.is_empty() {
                             inside_link = false;
                             current_link.clear();
                             continue;
+                        } else {
+                            links.push(sanitize_string(&current_link));
+                            inside_link = false;
                         }
-                        links.push(sanitize_string(&current_link));
-                        inside_link = false;
                     }
                 }
                 '<' => {
@@ -96,6 +97,7 @@ impl LinkHandler for WikiLinkHandler {
                         || current_link == "Help:"
                         || current_link == "Draft:"
                         || current_link == "User:"
+                        || current_link == "Image:"
                     {
                         // we realize that we are in either a file, template, or wikipedia article namespace. We reseet
                         inside_link = false;
