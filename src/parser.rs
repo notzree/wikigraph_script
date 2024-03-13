@@ -3,8 +3,11 @@ use crate::database_handler::{DatabaseHandler, PostgresDatabaseHandler};
 use crate::graph_builder::{GraphBuilder, WikiBinaryGraphBuilder};
 use crate::link_handler::{LinkHandler, WikiLinkHandler};
 use crate::models::{LookupEntry, RedirectEntry};
+use crate::schema::lookup::{self, byteoffset};
 use crate::utils::sanitize_string;
 use core::panic;
+use diesel::result::DatabaseErrorKind;
+use diesel::result::Error::DatabaseError;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -19,6 +22,7 @@ const LINK_SIZE: usize = 4;
 
 const ADJACENCY_LIST_PATH: &str = "adjacency_list.txt";
 const NUM_ARTICLES: u64 = 9030425;
+const NUM_SIMPLE_ARTICLES: u64 = 248780;
 
 pub struct Parser {
     file_reader: quick_xml::Reader<std::io::BufReader<File>>,
@@ -53,7 +57,7 @@ impl Parser {
     }
     //First pass to generate lookup table with computed byte offsets + create text file with adjacency list
     pub fn pre_process_file(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let bar = ProgressBar::new(NUM_ARTICLES);
+        let bar = ProgressBar::new(NUM_SIMPLE_ARTICLES);
         bar.set_style(
             ProgressStyle::with_template(
                 "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
@@ -64,7 +68,6 @@ impl Parser {
             })
             .progress_chars("#>-"),
         );
-        // let mut adj_list = File::create(ADJACENCY_LIST_PATH).unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
         let mut prev_offset: usize = FILE_HEADER_SIZE;
@@ -105,7 +108,6 @@ impl Parser {
                                             }
                                             page_title = e.unescape().unwrap().into_owned();
                                         }
-
                                         continue;
                                     }
                                     if e.name().as_ref() == b"text" {
@@ -148,43 +150,60 @@ impl Parser {
                             || page_txt.contains("{{disambiguation}}")
                             || page_txt.contains("{{disambig")
                             || page_title.contains("MOS:")
+                            || page_title.contains("module:")
+                            || page_title.contains("Module:")
+                            || page_title.contains("MediaWiki:")
+                            || page_title.contains("mediawiki:")
+                            ||page_title.contains("main page/")
                         {
                             continue;
                         }
                         let sanitized_page_title = sanitize_string(&page_title);
                         if is_redirect {
-                            // let links = self.link_handler.extract_links(page_txt);
-                            // if links.is_empty() {
-                            //     continue;
-                            // }
-                            // let sanitized_redirect_output = sanitize_string(&links[0]);
-                            // let redirect_entry = RedirectEntry {
-                            //     redirect_from: sanitized_page_title,
-                            //     redirect_to: sanitized_redirect_output,
-                            // };
-                            // self.database_handler
-                            //     .add_redirect_entry(&redirect_entry)
-                            //     .unwrap();
+                            let links = self.link_handler.extract_links(page_txt);
+                            if links.is_empty() {
+                                continue;
+                            }
+                            let sanitized_redirect_output = sanitize_string(&links[0]);
+                            let redirect_entry = RedirectEntry {
+                                redirect_from: sanitized_page_title,
+                                redirect_to: sanitized_redirect_output,
+                            };
+                            self.database_handler
+                                .add_redirect_entry(&redirect_entry)
+                                .unwrap();
                             continue;
                         }
+
                         let links = self.link_handler.extract_links(page_txt);
+                        if links.is_empty() {
+                            continue;
+                        }
                         let curr_length = self.compute_length(links.len());
+                        let prev_prev_offset = prev_offset;
                         prev_offset = self.compute_byte_offset(prev_offset, prev_length);
+
                         let lookup_entry = LookupEntry {
                             title: sanitized_page_title,
                             byteoffset: prev_offset.try_into().unwrap(), // in bytes
                             length: curr_length.try_into().unwrap(),
                         };
-                        // self.database_handler
-                        //     .add_lookup_entry(&lookup_entry)
-                        //     .unwrap();
-                        self.adj_list_handler
-                            .add_to_adj_list(&page_title, links)
-                            .unwrap();
-
-                        bar.inc(1);
-                        prev_length = curr_length;
-                        count += 1;
+                        match self.database_handler.add_lookup_entry(&lookup_entry) {
+                            Ok(_) => {
+                                self.adj_list_handler
+                                    .add_to_adj_list(&page_title, links.len(), links)
+                                    .unwrap();
+                                bar.inc(1);
+                                prev_length = curr_length;
+                                count += 1;
+                            }
+                            Err(DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+                                prev_offset = prev_prev_offset;
+                                continue;
+                                //keep going if we encounter a duplicate key error, but do not add to adj_list
+                            }
+                            Err(e) => panic!("error: {}", e), //propogate any other errors
+                        }
                     }
                 }
                 // There are several other `Event`s we do not consider here
@@ -197,7 +216,7 @@ impl Parser {
     //Second pass to take adjacency list + lookup table -> graph in binary format.
     pub fn create_graph(&mut self) {
         const FILE_VERSION: i32 = 1;
-        let bar = ProgressBar::new(NUM_ARTICLES);
+        let bar = ProgressBar::new(NUM_SIMPLE_ARTICLES);
         bar.set_style(
             ProgressStyle::with_template(
                 "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
@@ -217,32 +236,37 @@ impl Parser {
                     let mut split = line.split('|');
                     let t = split.next().unwrap();
                     let current_position = self.graph_builder.get_current_position();
-                    let lookup_entry = self.database_handler.lookup_with_redirects(t).unwrap();
+                    let lookup_entry = match self.database_handler.look_up_lookup_entry(t) {
+                        Ok(entry) => entry,
+                        Err(_e) => {
+                            // Optionally log the error here
+                            println!("skipping: {:?}", t);
+                            continue; // Skip the current iteration and proceed with the next one
+                        }
+                    };
+
                     let expected_offset = (lookup_entry.byteoffset) as u64;
-                    println!("{} {}", current_position, expected_offset);
+
                     if current_position != expected_offset {
                         panic!(
-                            "Byteoffset mismatch. Expected: {}, Got: {}",
-                            lookup_entry.byteoffset, current_position
+                            "{} Byteoffset mismatch. expected: {}, got: {}, searching for:{}, found: {:?}",
+                             (lookup_entry.byteoffset - current_position as i32), lookup_entry.byteoffset, current_position, t, lookup_entry
                         );
                     }
-                    let links = split.next().unwrap().split('_');
-                    let num_links = links.clone().count() as i32;
+                    let num_links: i32 = split.next().unwrap().parse().unwrap();
                     self.graph_builder.write_node_header(num_links);
-                    for link in links {
+                    for link in split {
                         if link.is_empty() {
                             continue;
                         }
                         let lookup_entry = self.database_handler.lookup_with_redirects(link);
-                        if lookup_entry.is_err() {
-                            panic!("Error looking up {}", link);
-                            // continue;
-                        }
-                        let lookup_entry = lookup_entry.unwrap();
-                        self.graph_builder.write_value(lookup_entry.byteoffset);
+                        let byte_offset = match lookup_entry {
+                            Ok(lookup_entry) => lookup_entry.byteoffset,
+                            Err(_e) => 0,
+                        };
+
+                        self.graph_builder.write_value(byte_offset);
                     }
-                    // println!("{} done", t);
-                    self.graph_builder.flush_writer();
                 }
                 Err(e) => panic!("Error reading line: {:?}", e),
             }
