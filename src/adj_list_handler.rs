@@ -7,6 +7,7 @@ pub trait AdjacencyListHandler {
     fn add_to_adj_list(
         &mut self,
         title: &str,
+        count: usize,
         links: Vec<String>,
     ) -> Result<(), diesel::result::Error>;
     fn iter(&self) -> std::io::Lines<std::io::BufReader<&File>>;
@@ -30,12 +31,18 @@ impl AdjacencyListHandler for WikigraphAdjacencyListHandler {
     fn add_to_adj_list(
         &mut self,
         title: &str,
+        count: usize,
         links: Vec<String>,
     ) -> Result<(), diesel::result::Error> {
         let mut line = sanitize_string(title) + "|";
+        line.push_str(&count.to_string());
+        line.push('|');
         for link in links.iter() {
             line.push_str(link);
-            line.push('_');
+            line.push('|');
+        }
+        if line.ends_with('|') {
+            line.pop(); // Remove the last '|'
         }
         line.push('\n');
         let _ = match self.adj_list.write_all(line.as_bytes()) {
