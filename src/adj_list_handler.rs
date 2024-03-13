@@ -30,11 +30,11 @@ impl WikigraphAdjacencyListHandler {
 impl AdjacencyListHandler for WikigraphAdjacencyListHandler {
     fn add_to_adj_list(
         &mut self,
-        title: &str,
+        title_byte_offset: &str,
         count: usize,
         links: Vec<String>,
     ) -> Result<(), diesel::result::Error> {
-        let mut line = sanitize_string(title) + "|";
+        let mut line = sanitize_string(title_byte_offset) + "|";
         line.push_str(&count.to_string());
         line.push('|');
         for link in links.iter() {

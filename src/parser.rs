@@ -191,7 +191,7 @@ impl Parser {
                         match self.database_handler.add_lookup_entry(&lookup_entry) {
                             Ok(_) => {
                                 self.adj_list_handler
-                                    .add_to_adj_list(&page_title, links.len(), links)
+                                    .add_to_adj_list(&prev_offset.to_string(), links.len(), links)
                                     .unwrap();
                                 bar.inc(1);
                                 prev_length = curr_length;
@@ -236,21 +236,25 @@ impl Parser {
                     let mut split = line.split('|');
                     let t = split.next().unwrap();
                     let current_position = self.graph_builder.get_current_position();
-                    let lookup_entry = match self.database_handler.look_up_lookup_entry(t) {
-                        Ok(entry) => entry,
-                        Err(_e) => {
-                            // Optionally log the error here
-                            println!("skipping: {:?}", t);
-                            continue; // Skip the current iteration and proceed with the next one
-                        }
-                    };
+                    // let lookup_entry = match self.database_handler.look_up_lookup_entry(t) {
+                    //     Ok(entry) => entry,
+                    //     Err(_e) => {
+                    //         // Optionally log the error here
+                    //         println!("skipping: {:?}", t);
+                    //         continue; // Skip the current iteration and proceed with the next one
+                    //     }
+                    // };
 
-                    let expected_offset = (lookup_entry.byteoffset) as u64;
+                    // let expected_offset = (lookup_entry.byteoffset) as u64;
+                    let expected_offset = t.parse::<u64>().unwrap();
 
                     if current_position != expected_offset {
                         panic!(
-                            "{} Byteoffset mismatch. expected: {}, got: {}, searching for:{}, found: {:?}",
-                             (lookup_entry.byteoffset - current_position as i32), lookup_entry.byteoffset, current_position, t, lookup_entry
+                            "{} Byteoffset mismatch. expected: {}, got: {}, searching for:{}, ",
+                            (expected_offset - current_position),
+                            expected_offset,
+                            current_position,
+                            t,
                         );
                     }
                     let num_links: i32 = split.next().unwrap().parse().unwrap();
