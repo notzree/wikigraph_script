@@ -22,6 +22,8 @@ pub trait DatabaseHandler {
         &mut self,
         input_title: &str,
     ) -> Result<LookupEntry, diesel::result::Error>;
+
+    fn read_offsets_into_memory(&mut self) -> Vec<(String, i32)>;
 }
 
 pub struct PostgresDatabaseHandler {
@@ -94,5 +96,11 @@ impl DatabaseHandler for PostgresDatabaseHandler {
             }
             Err(e) => Err(e), // For other errors, we will propgate
         }
+    }
+    fn read_offsets_into_memory(&mut self) -> Vec<(String, i32)> {
+        lookup
+            .select((title, byteoffset))
+            .load(&mut self.connection)
+            .unwrap()
     }
 }
