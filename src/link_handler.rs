@@ -12,9 +12,25 @@ impl LinkHandler for WikiLinkHandler {
         let mut links: Vec<String> = Vec::new();
         let mut current_link = String::new();
         let mut inside_link = false;
+        let mut inside_tag = false; // New variable to track if we're inside a tag
+        let mut tag_depth = 0; // Track the depth of nested tags
 
         let mut chars = text.chars().peekable();
         while let Some(c) = chars.next() {
+            if inside_tag {
+                // Logic to handle skipping tags, including nested ones
+                if c == '<' {
+                    tag_depth += 1; // Increase depth for nested tags
+                } else if c == '>' {
+                    tag_depth -= 1; // Decrease depth when closing tags
+                    if tag_depth == 0 {
+                        inside_tag = false; // We're no longer inside a tag
+                    }
+                    continue; // Skip the rest of the loop iteration
+                }
+                // Skip characters inside tags
+                continue;
+            }
             match c {
                 '[' if chars.peek() == Some(&'[') => {
                     // Detect starting "[["
@@ -38,7 +54,10 @@ impl LinkHandler for WikiLinkHandler {
                             let link = split.next().unwrap();
                             current_link = link.to_string();
                         }
-                        if current_link.contains("(disambiguation)") || current_link.is_empty() {
+                        if current_link.contains("(disambiguation)")
+                            || sanitize_string(&current_link).is_empty()
+                        //make sure the sanitized version is valid
+                        {
                             inside_link = false;
                             current_link.clear();
                             continue;
@@ -49,33 +68,9 @@ impl LinkHandler for WikiLinkHandler {
                     }
                 }
                 '<' => {
-                    //we encounter a tag, based on the markup, we can skip the content of the tag...
-                    let mut tag_name = String::new();
-                    let mut closing_tag_name = String::new();
-                    //TODO:check if tag_name == closing_tag_name..
-                    for c in chars.by_ref() {
-                        if c == '>' {
-                            break;
-                        }
-                        tag_name.push(c);
-                    }
-                    if tag_name.contains("ref") || tag_name.contains("syntaxhighlight") {
-                        //we skip the content of the tag
-                        while let Some(c) = chars.next() {
-                            if c == '<' && chars.peek() == Some(&'/') {
-                                //encounter closing tag
-                                for c in chars.by_ref() {
-                                    if c == '>' && closing_tag_name.contains("ref")
-                                        || closing_tag_name.contains("syntaxhighlight")
-                                    {
-                                        break;
-                                    }
-                                    closing_tag_name.push(c);
-                                }
-                                break;
-                            }
-                        }
-                    }
+                    //skip all tags
+                    inside_tag = true;
+                    tag_depth = 1;
                 }
                 '{' if chars.peek() == Some(&'{') => {
                     //skip till the end
@@ -87,7 +82,7 @@ impl LinkHandler for WikiLinkHandler {
                     }
                 }
 
-                _ if inside_link => {
+                _ if inside_link && !inside_tag => {
                     current_link.push(c);
                     if current_link == "File:"
                         || current_link == "Wikipedia:"
