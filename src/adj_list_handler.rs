@@ -41,8 +41,8 @@ impl AdjacencyListHandler for WikigraphAdjacencyListHandler {
             line.push_str(link);
             line.push('|');
         }
-        if line.ends_with('|') {
-            line.pop(); // Remove the last '|'
+        while line.ends_with('|') {
+            line.pop(); //remove trailing '|'
         }
         line.push('\n');
         let _ = match self.adj_list.write_all(line.as_bytes()) {
