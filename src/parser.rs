@@ -11,9 +11,11 @@ use diesel::result::Error::DatabaseError;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use std::collections::HashMap;
 use std::fmt::Write as fmtWrite;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{empty, BufRead, BufReader};
+use std::process::exit;
 
 //All sizes are in bytes. ie: 4 * 4 = 16 bytes = 4 integers.
 const FILE_HEADER_SIZE: usize = 4 * 4;
@@ -21,7 +23,7 @@ const NODE_HEADER_SIZE: usize = 4 * 4;
 const LINK_SIZE: usize = 4;
 
 const ADJACENCY_LIST_PATH: &str = "adjacency_list.txt";
-const NUM_ARTICLES: u64 = 9030425;
+const NUM_ARTICLES: u64 = 8395904;
 const NUM_SIMPLE_ARTICLES: u64 = 248780;
 
 pub struct Parser {
@@ -57,7 +59,7 @@ impl Parser {
     }
     //First pass to generate lookup table with computed byte offsets + create text file with adjacency list
     pub fn pre_process_file(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let bar = ProgressBar::new(NUM_SIMPLE_ARTICLES);
+        let bar = ProgressBar::new(NUM_ARTICLES);
         bar.set_style(
             ProgressStyle::with_template(
                 "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
@@ -215,8 +217,17 @@ impl Parser {
     }
     //Second pass to take adjacency list + lookup table -> graph in binary format.
     pub fn create_graph(&mut self) {
+        //load database into memory (~2.5gbs)
         const FILE_VERSION: i32 = 1;
-        let bar = ProgressBar::new(NUM_SIMPLE_ARTICLES);
+        println!("loading into memory...");
+        let start = std::time::Instant::now();
+        let mut map: HashMap<String, i32> = HashMap::new();
+        for (title, bytes) in self.database_handler.read_offsets_into_memory().iter() {
+            map.insert(title.to_owned(), bytes.to_owned());
+        }
+        println!("Loaded into memory in {:?}", start.elapsed());
+
+        let bar = ProgressBar::new(NUM_ARTICLES);
         bar.set_style(
             ProgressStyle::with_template(
                 "[{wide_bar:.cyan/blue}] [{elapsed_precise}] {pos:>7}/{len:7} ({eta})",
@@ -229,48 +240,43 @@ impl Parser {
         );
 
         self.graph_builder.write_file_header();
+        let mut count = 0;
 
         for line in self.adj_list_handler.iter() {
             match line {
                 Ok(line) => {
+                    count += 1;
                     let mut split = line.split('|');
                     let t = split.next().unwrap();
                     let current_position = self.graph_builder.get_current_position();
-                    // let lookup_entry = match self.database_handler.look_up_lookup_entry(t) {
-                    //     Ok(entry) => entry,
-                    //     Err(_e) => {
-                    //         // Optionally log the error here
-                    //         println!("skipping: {:?}", t);
-                    //         continue; // Skip the current iteration and proceed with the next one
-                    //     }
-                    // };
-
-                    // let expected_offset = (lookup_entry.byteoffset) as u64;
                     let expected_offset = t.parse::<u64>().unwrap();
-
                     if current_position != expected_offset {
                         panic!(
-                            "{} Byteoffset mismatch. expected: {}, got: {}, searching for:{}, ",
+                            "{} Byteoffset mismatch. expected: {}, got: {}, on line:{}, ",
                             (expected_offset - current_position),
                             expected_offset,
                             current_position,
-                            t,
+                            count
                         );
                     }
                     let num_links: i32 = split.next().unwrap().parse().unwrap();
                     self.graph_builder.write_node_header(num_links);
                     for link in split {
                         if link.is_empty() {
-                            continue;
+                            panic!("empty link for line {}", count);
                         }
-                        let lookup_entry = self.database_handler.lookup_with_redirects(link);
-                        let byte_offset = match lookup_entry {
-                            Ok(lookup_entry) => lookup_entry.byteoffset,
-                            Err(_e) => 0,
-                        };
+
+                        let byte_offset = map.get(link).unwrap_or(&0).to_owned();
 
                         self.graph_builder.write_value(byte_offset);
                     }
+                    //uncomment for easier debugging
+                    // if link_count != num_links {
+                    //     println!(
+                    //         "Link count mismatch. expected: {}, got: {}, on line:{} with {} empty links",
+                    //         num_links, link_count, count, empty_count
+                    //     );
+                    // }
                 }
                 Err(e) => panic!("Error reading line: {:?}", e),
             }
