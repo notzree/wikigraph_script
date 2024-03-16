@@ -15,5 +15,9 @@ Speed results for pre-processing section:
 Speed results for graph-building section:
 - 42 minutes after caching (Estimated almost 190+ hours before!)
 
+## Caveats:
+I was not able to successfully parse all links and as such this graph is not 100% fully complete. I ran into an issue differentiating capitalized and lowercased pages. For example, the programming language [ALGOL](https://en.wikipedia.org/wiki/ALGOL) and the star [Algol](https://en.wikipedia.org/wiki/Algol) are differentiated by the casing. This works fine as long as links from other pages that references these pages obey the same capitalization convention, this wasn't the case. I kept running into casing issues resulting in duplicate key errors or not resulting in entries being found in the database. I do intend on polishing this in the future (maybe during summer when I have no school). 
+
+
 
 
