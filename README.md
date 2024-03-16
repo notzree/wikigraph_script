@@ -15,6 +15,25 @@ Speed results for pre-processing section:
 Speed results for graph-building section:
 - 42 minutes after caching (Estimated almost 190+ hours before!)
 
+## Getting the data:
+### Option 1: Run it locally
+After cloning the repo, install the wikipedia xml dumps from [here] (https://dumps.wikimedia.org/enwiki/), download the enwiki-version-you-want-pages-articles.xml.bz2. Unzip the file with:
+```
+bunzip2 enwiki-version-you-want-pages-articles.xml.bz2
+```
+Then, make sure it's in the raw_data directory (or you can customize the directory variable). Also make sure to populate a .env file with the databse credentials of your choosing. Then, you can startup the docker container with
+```
+docker compose run wikigraph
+//run this inside the docker container
+cargo run
+```
+You should start to see a progress bar and an ETA.
+
+### Option 2: Download it from my website [here](https://richard-zhang.ca/)
+//todo: set up this file download
+
+
+
 ## Caveats:
 I was not able to successfully parse all links and as such this graph is not 100% fully complete. I ran into an issue differentiating capitalized and lowercased pages. For example, the programming language [ALGOL](https://en.wikipedia.org/wiki/ALGOL) and the star [Algol](https://en.wikipedia.org/wiki/Algol) are differentiated by the casing. This works fine as long as links from other pages that references these pages obey the same capitalization convention, this wasn't the case. I kept running into casing issues resulting in duplicate key errors or not resulting in entries being found in the database. I do intend on polishing this in the future (maybe during summer when I have no school). 
 
