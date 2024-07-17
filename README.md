@@ -1,4 +1,18 @@
 # Wikigraph script
+> Rust script to 100x compress wikipedia xml dump into a traversable link graph
+## Installation:
+After cloning the repo, install the wikipedia xml dumps from [here] (https://dumps.wikimedia.org/enwiki/), download the enwiki-version-you-want-pages-articles.xml.bz2. Unzip the file with:
+```
+bunzip2 enwiki-version-you-want-pages-articles.xml.bz2
+```
+Then, make sure it's in the raw_data directory (or you can customize the directory variable). Also make sure to populate a .env file with the databse credentials of your choosing. Then, you can startup the docker container with
+```
+docker compose run wikigraph
+//run this inside the docker container
+cargo run
+```
+You should start to see a progress bar and an ETA.
+
 Converts Wikipedia's XML Database dumps into a graph stored in a binary format. Inspired by: Tristan Hume's [Wikicrush](https://github.com/trishume/wikicrush). This borrows the binary format that Tristan described in the Readme of Wikicrush, which is highly compact and compresses the almost 100GB Wikipedia XML dump into a ~ 1.27GB Binary link graph. During development, I used the smaller simple english wiki, which I could process in ~6-8 minutes on my local machine.
 ## File format:
 The file format contains a File header, a page header, and the links. Each header is represented by 4 32-bit integers. The file header has 2 unused integers, 1 integer representing the version, and 1 integer representing the number of pages (also called node in my code). The page header contains 3 unused integers which are used for marking visited nodes in traversal, as well as the number of links that the page has. Each link is a single integer that contains the byteoffset of the page it is linking to. This lets you skip to the next page by incrementing (4 * num_links) bytes forward. This also lets you easily access the page that is linked by moving the reader to the byteoffset. 
@@ -18,24 +32,6 @@ Speed results for pre-processing section:
   
 Speed results for graph-building section:
 - 42 minutes after caching (Estimated almost 190+ hours before!)
-
-## Getting the data:
-### Option 1: Run it locally
-After cloning the repo, install the wikipedia xml dumps from [here] (https://dumps.wikimedia.org/enwiki/), download the enwiki-version-you-want-pages-articles.xml.bz2. Unzip the file with:
-```
-bunzip2 enwiki-version-you-want-pages-articles.xml.bz2
-```
-Then, make sure it's in the raw_data directory (or you can customize the directory variable). Also make sure to populate a .env file with the databse credentials of your choosing. Then, you can startup the docker container with
-```
-docker compose run wikigraph
-//run this inside the docker container
-cargo run
-```
-You should start to see a progress bar and an ETA.
-
-### Option 2: Download it from my website [here](https://richard-zhang.ca/)
-//todo: set up this file download
-
 
 
 ## Caveats:
